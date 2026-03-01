@@ -36,12 +36,3 @@
 统一响应头：
 
 - `Content-Type: application/json; charset=utf-8`
-
-## 新增路由规范
-
-新增 API 时建议保持以下约定：
-
-1. 业务逻辑放在独立功能目录（如 `weather/function.js`）
-2. 在 `main/index.js` 仅做路由映射，不堆叠业务逻辑
-3. 错误返回尽量使用统一响应工具
-4. 在对应功能目录补充接口文档
