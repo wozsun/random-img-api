@@ -91,7 +91,11 @@ const handleRandomImg = async (request) => {
     const isMobile = /Mobi|Android|iPhone/i.test(userAgent);
     const device = params.get("d")?.toLowerCase() || (isMobile ? "mb" : "pc");
     const brightness = params.get("b")?.toLowerCase() || null;
-    const theme = params.get("t")?.toLowerCase() || null;
+    const themeParams = params
+        .getAll("t")
+        .flatMap((value) => value.split(","))
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean);
     const folderMap = RANDOM_IMG_CONFIG.FOLDER_MAP;
 
     //device处理
@@ -120,10 +124,13 @@ const handleRandomImg = async (request) => {
             )
         )
     );
-    if (theme && !validThemes.includes(theme)) {
+    const invalidTheme = themeParams.find((candidateTheme) => !validThemes.includes(candidateTheme));
+    if (invalidTheme) {
         return jsonErrorResponse(RANDOM_IMG_ERRORS.INVALID_THEME);
     }
-    const themeCandidates = theme ? [theme] : validThemes;
+    const themeCandidates = themeParams.length > 0
+        ? Array.from(new Set(themeParams))
+        : validThemes;
 
     const candidates = [];
     for (const candidateDevice of deviceCandidates) {
@@ -139,7 +146,7 @@ const handleRandomImg = async (request) => {
     }
 
     if (candidates.length === 0) {
-        if (brightness || theme) {
+        if (brightness || themeParams.length > 0) {
             return jsonErrorResponse(RANDOM_IMG_ERRORS.NO_IMAGES_FOR_COMBINATION);
         }
         return jsonErrorResponse(RANDOM_IMG_ERRORS.NO_AVAILABLE_IMAGES);
