@@ -11,12 +11,14 @@ const jsonErrorResponse = (error) =>
 
 const RANDOM_IMG_CONFIG = {
     BASE_IMAGE_URL: "https://example.com/",
-    ALLOWED_PARAMS: new Set(["type", "theme"]),
+    ALLOWED_PARAMS: new Set(["type", "theme", "method"]),
     VALID_TYPES: new Set(["pc", "mb", "sq"]),
+    VALID_METHODS: new Set(["302"]),
     FOLDER_MAP: {
         dark: { pc: 27, mb: 6, sq: 0 },
         light: { pc: 28, mb: 4, sq: 0 },
         fddm: { pc: 8, mb: 15, sq: 1 },
+        ghost: { pc: 5, mb: 5, sq: 0 },
     },
 };
 
@@ -24,6 +26,7 @@ const RANDOM_IMG_ERRORS = {
     INVALID_QUERY_PARAMS: { status: 400, message: "Bad Request: Invalid query parameters" },
     INVALID_TYPE: { status: 400, message: "Bad Request: Invalid type" },
     INVALID_THEME: { status: 400, message: "Bad Request: Invalid theme" },
+    INVALID_METHOD: { status: 400, message: "Bad Request: Invalid method" },
     NO_IMAGES_FOR_THEME: (theme) => ({ status: 404, message: `Not Found: No available images for theme ${theme}` }),
     NO_AVAILABLE_IMAGES: { status: 404, message: "Not Found: No available images" },
     FETCH_FAILED: { status: 502, message: "Bad Gateway: Failed to fetch image" },
@@ -74,10 +77,37 @@ const handleRandomImg = async (request) => {
     const imageNumber = Math.floor(Math.random() * folderMap[finalTheme][type]) + 1;
     const imageUrl = `${RANDOM_IMG_CONFIG.BASE_IMAGE_URL}${type}-${finalTheme}/${imageNumber}.webp`;
 
-    return new Response(null, {
-        status: 302,
-        headers: { Location: imageUrl },
-    });
+    const method = params.get("method");
+
+    if (method && !RANDOM_IMG_CONFIG.VALID_METHODS.has(method)) {
+        return jsonErrorResponse(RANDOM_IMG_ERRORS.INVALID_METHOD);
+    }
+
+    if (method === "302") {
+        return new Response(null, {
+            status: 302,
+            headers: { Location: imageUrl },
+        });
+    }
+
+    try {
+        const upstreamResponse = await fetch(imageUrl);
+
+        if (!upstreamResponse.ok) {
+            return jsonErrorResponse(RANDOM_IMG_ERRORS.FETCH_FAILED);
+        }
+
+        const headers = new Headers(upstreamResponse.headers);
+        headers.set("Cache-Control", "public, max-age=3600");
+
+        return new Response(upstreamResponse.body, {
+            status: 200,
+            headers,
+        });
+    } catch (error) {
+        console.error("Failed to fetch upstream image:", error);
+        return jsonErrorResponse(RANDOM_IMG_ERRORS.FETCH_ERROR);
+    }
 
 
 };
@@ -86,6 +116,11 @@ const routes = {
     "/": async () => jsonErrorResponse(GLOBAL_ERRORS.NOT_FOUND),
     "/hello": async () =>
         new Response(JSON.stringify({ message: "Hello, World!" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+        }),
+    "/healthcheck": async () =>
+        new Response(JSON.stringify({ message: "API on EdgeFunction is healthy" }), {
             status: 200,
             headers: { "Content-Type": "application/json" },
         }),
