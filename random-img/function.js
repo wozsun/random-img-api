@@ -3,27 +3,30 @@ import { detailedErrorResponse, jsonSuccessResponse } from "../main/response.js"
 // ===========================
 // 随机图片 API 配置
 // ===========================
-const RANDOM_IMG_CONFIG = {
-	BASE_IMAGE_URL_KEY: "BASE_IMAGE_URL", 			// KV 存储中图片基础路径的键名
-	FOLDER_MAP_KEY: "FOLDER_MAP", 					// KV 存储中目录映射的键名
-	KV_NAMESPACE: "random-img-config", 				// KV 命名空间
-	FOLDER_MAP_CACHE_TTL_MS: 60 * 1000, 			// FOLDER_MAP 本地缓存时长（毫秒）
-	BASE_IMAGE_URL_CACHE_TTL_MS: 60 * 1000, 		// BASE_IMAGE_URL 本地缓存时长（毫秒）
-	ALLOWED_PARAMS: new Set(["d", "b", "t", "m"]), 	// 允许的查询参数：d->device, b->brightness, t->theme, m->method
-	REQUEST_VALID_DEVICES: new Set(["pc", "mb", "r"]),	// 请求参数允许的设备类型（r 表示随机设备）
-	FOLDER_MAP_VALID_DEVICES: new Set(["pc", "mb"]),	// FOLDER_MAP 配置允许的设备类型（不包含 r）
-	VALID_BRIGHTNESS: new Set(["dark", "light"]),  	// 合法明暗类型
-	VALID_METHODS: new Set(["proxy", "redirect"]), 	// 合法方法（proxy、redirect）
+const ALLOWED_PARAMS = ["d", "b", "t", "m"];
+const MAP_DEVICES = ["pc", "mb"];
+const REQUEST_DEVICES = [...MAP_DEVICES, "r"];
+const BRIGHTNESS_VALUES = ["dark", "light"];
+const METHOD_VALUES = ["proxy", "redirect"];
+
+const ALLOWED_PARAMS_SET = new Set(ALLOWED_PARAMS);
+const REQUEST_DEVICE_SET = new Set(REQUEST_DEVICES);
+const BRIGHTNESS_SET = new Set(BRIGHTNESS_VALUES);
+const METHOD_SET = new Set(METHOD_VALUES);
+
+const BASE_IMAGE_URL_KEY = "BASE_IMAGE_URL";
+const FOLDER_MAP_KEY = "FOLDER_MAP";
+const KV_NAMESPACE = "random-img-config";
+const KV_CACHE_TTL_MS = 60 * 1000;
+
+// 懒初始化并复用同一个 EdgeKV 客户端：仅在真正读取 KV 时创建。
+let edgeKVClient = null;
+const getEdgeKVClient = () => {
+	if (!edgeKVClient) {
+		edgeKVClient = new EdgeKV({ namespace: KV_NAMESPACE });
+	}
+	return edgeKVClient;
 };
-
-const REQUEST_VALID_DEVICES_LIST = Array.from(RANDOM_IMG_CONFIG.REQUEST_VALID_DEVICES);
-const FOLDER_MAP_VALID_DEVICES_LIST = Array.from(RANDOM_IMG_CONFIG.FOLDER_MAP_VALID_DEVICES);
-const VALID_BRIGHTNESS_LIST = Array.from(RANDOM_IMG_CONFIG.VALID_BRIGHTNESS);
-const VALID_METHODS_LIST = Array.from(RANDOM_IMG_CONFIG.VALID_METHODS);
-// 预计算 Set 对应的数组，避免在请求路径中重复 Array.from
-
-// 复用同一个 EdgeKV 客户端，避免重复创建实例
-const edgeKV = new EdgeKV({ namespace: RANDOM_IMG_CONFIG.KV_NAMESPACE });
 
 // ===========================
 // 随机图片 API 错误定义
@@ -43,14 +46,14 @@ const RANDOM_IMG_ERRORS = {
 };
 
 const FOLDER_MAP_CONFIG_ERROR_DETAILS = {
-	configKey: RANDOM_IMG_CONFIG.FOLDER_MAP_KEY,
-	namespace: RANDOM_IMG_CONFIG.KV_NAMESPACE,
+	configKey: FOLDER_MAP_KEY,
+	namespace: KV_NAMESPACE,
 	hint: "Ensure FOLDER_MAP exists in KV and contains a valid JSON object",
 };
 
 const BASE_IMAGE_URL_CONFIG_ERROR_DETAILS = {
-	configKey: RANDOM_IMG_CONFIG.BASE_IMAGE_URL_KEY,
-	namespace: RANDOM_IMG_CONFIG.KV_NAMESPACE,
+	configKey: BASE_IMAGE_URL_KEY,
+	namespace: KV_NAMESPACE,
 	hint: "Ensure BASE_IMAGE_URL exists in KV and is a non-empty URL string",
 };
 
@@ -66,7 +69,7 @@ const validateAllowedQueryParams = (params, allowedParams) => {
 		if (!allowedParams.has(key)) {
 			return detailedErrorResponse(RANDOM_IMG_ERRORS.INVALID_QUERY_PARAMS, {
 				invalidParams: [key],
-				allowedParams: Array.from(allowedParams),
+				allowedParams: ALLOWED_PARAMS,
 			});
 		}
 	}
@@ -74,23 +77,29 @@ const validateAllowedQueryParams = (params, allowedParams) => {
 	return null;
 };
 
+// 进程内缓存：仅在当前边缘实例复用，跨实例/冷启动不共享
 let folderMapCache = {
 	value: null,
 	expiresAt: 0,
 };
-// 进程内缓存：仅在当前边缘实例复用，跨实例/冷启动不共享
-
 let baseImageUrlCache = {
 	value: null,
 	expiresAt: 0,
 };
-// 进程内缓存：仅在当前边缘实例复用，跨实例/冷启动不共享
+let validThemesCache = {
+	value: null,
+	expiresAt: 0,
+};
+let validThemeSetCache = {
+	value: null,
+	expiresAt: 0,
+};
 
 // 从 KV 读取文本值并做 trim 归一化，读取失败或非字符串时返回 null。
 const getKvText = async (key) => {
 	try {
 		// 以文本模式读取指定 KV 键的值。
-		const value = await edgeKV.get(key, { type: "text" });
+		const value = await getEdgeKVClient().get(key, { type: "text" });
 		// 若读取结果不是字符串，则按无效值处理。
 		if (typeof value !== "string") {
 			return null;
@@ -105,62 +114,47 @@ const getKvText = async (key) => {
 	}
 };
 
-// 判断传入值是否为可用于配置校验的普通对象（排除 null 与数组）。
-const isPlainObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+// 从 FOLDER_MAP 汇总“全局有效主题”列表：
+// 1) 仅遍历固定设备范围（pc/mb）；2) 拉平亮度层后的主题键；3) 通过 Set 去重。
+const buildValidThemes = (folderMap) =>
+	Array.from(
+		new Set(
+			// 按设备展开，再按 brightness 展开，最终收集每个主题名。
+			MAP_DEVICES.flatMap((device) =>
+				Object.values(folderMap[device] ?? {}).flatMap((brightnessMap) =>
+					Object.keys(brightnessMap ?? {})
+				)
+			)
+		)
+	);
 
-// 逐层校验 FOLDER_MAP 的 device/brightness/theme 结构与计数合法性。
-const validateFolderMap = (folderMap) => {
-	// 首先确认根节点是普通对象结构。
-	if (!isPlainObject(folderMap)) {
-		return false;
+const getValidThemeSet = (folderMap) => {
+	if (validThemeSetCache.value && Date.now() < validThemeSetCache.expiresAt) {
+		return validThemeSetCache.value;
 	}
+	const validThemes = getValidThemes(folderMap);
+	const validThemeSet = new Set(validThemes);
+	validThemeSetCache = {
+		value: validThemeSet,
+		expiresAt: Date.now() + KV_CACHE_TTL_MS,
+	};
+	return validThemeSet;
+};
 
-	// 读取顶层 device 键列表用于后续逐层校验。
-	const deviceKeys = Object.keys(folderMap);
-	// 顶层为空对象时视为无效配置。
-	if (deviceKeys.length === 0) {
-		return false;
+const getValidThemes = (folderMap) => {
+	if (validThemesCache.value && Date.now() < validThemesCache.expiresAt) {
+		return validThemesCache.value;
 	}
-
-	// 逐个校验 device 维度。
-	for (const device of deviceKeys) {
-		// 仅允许在 FOLDER_MAP 中出现配置设备集合里的值。
-		if (!RANDOM_IMG_CONFIG.FOLDER_MAP_VALID_DEVICES.has(device)) {
-			return false;
-		}
-
-		// 读取当前 device 下 brightness 映射。
-		const brightnessMap = folderMap[device];
-		// brightness 层不是对象时判定为无效。
-		if (!isPlainObject(brightnessMap)) {
-			return false;
-		}
-
-		// 逐个校验 brightness 维度。
-		for (const brightness of Object.keys(brightnessMap)) {
-			// brightness 值必须在允许集合中。
-			if (!RANDOM_IMG_CONFIG.VALID_BRIGHTNESS.has(brightness)) {
-				return false;
-			}
-
-			// 读取当前 brightness 下的 theme 映射。
-			const themeMap = brightnessMap[brightness];
-			// theme 层不是对象时判定为无效。
-			if (!isPlainObject(themeMap)) {
-				return false;
-			}
-
-			// 逐个校验 theme 与对应 count。
-			for (const [theme, count] of Object.entries(themeMap)) {
-				// theme 为空、count 非数字或为负数时判定无效。
-				if (!theme || !Number.isFinite(Number(count)) || Number(count) < 0) {
-					return false;
-				}
-			}
-		}
-	}
-
-	return true;
+	const validThemes = buildValidThemes(folderMap);
+	validThemesCache = {
+		value: validThemes,
+		expiresAt: Date.now() + KV_CACHE_TTL_MS,
+	};
+	validThemeSetCache = {
+		value: new Set(validThemes),
+		expiresAt: Date.now() + KV_CACHE_TTL_MS,
+	};
+	return validThemes;
 };
 
 // 读取并校验 FOLDER_MAP，优先命中内存缓存并返回统一的 { folderMap, errorKey } 结构。
@@ -172,7 +166,7 @@ const getFolderMapFromKV = async () => {
 	}
 
 	// 从 KV 拉取 FOLDER_MAP 原始文本。
-	const rawValue = await getKvText(RANDOM_IMG_CONFIG.FOLDER_MAP_KEY);
+	const rawValue = await getKvText(FOLDER_MAP_KEY);
 	// 若 KV 未配置或读取为空，返回统一配置错误键。
 	if (!rawValue) {
 		return { folderMap: null, errorKey: "FOLDER_MAP_CONFIG_ERROR" };
@@ -187,17 +181,19 @@ const getFolderMapFromKV = async () => {
 		// JSON 解析失败时返回配置错误键。
 		return { folderMap: null, errorKey: "FOLDER_MAP_CONFIG_ERROR" };
 	}
-
-	// 对解析后的对象做结构与数值合法性校验。
-	if (!validateFolderMap(parsed)) {
+	// 轻量类型守卫：仅接受非数组对象，避免后续访问时报运行时错误。
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
 		return { folderMap: null, errorKey: "FOLDER_MAP_CONFIG_ERROR" };
 	}
 
 	// 将合法配置写入本地缓存并刷新过期时间。
+	const expiresAt = Date.now() + KV_CACHE_TTL_MS;
 	folderMapCache = {
 		value: parsed,
-		expiresAt: Date.now() + RANDOM_IMG_CONFIG.FOLDER_MAP_CACHE_TTL_MS,
+		expiresAt,
 	};
+	validThemesCache = { value: null, expiresAt: 0 };
+	validThemeSetCache = { value: null, expiresAt: 0 };
 	// 缓存写回：后续同实例请求在 TTL 内可直接命中
 
 	return { folderMap: parsed, errorKey: null };
@@ -211,7 +207,7 @@ const getBaseImageUrlFromKV = async () => {
 	}
 
 	// 从 KV 读取基础 URL 文本。
-	const normalizedUrl = await getKvText(RANDOM_IMG_CONFIG.BASE_IMAGE_URL_KEY);
+	const normalizedUrl = await getKvText(BASE_IMAGE_URL_KEY);
 	// 若为空则表示配置缺失或无效。
 	if (!normalizedUrl) {
 		return null;
@@ -222,10 +218,51 @@ const getBaseImageUrlFromKV = async () => {
 	// 写入本地缓存并设置过期时间。
 	baseImageUrlCache = {
 		value: normalizedWithSlash,
-		expiresAt: Date.now() + RANDOM_IMG_CONFIG.BASE_IMAGE_URL_CACHE_TTL_MS,
+		expiresAt: Date.now() + KV_CACHE_TTL_MS,
 	};
 
 	return normalizedWithSlash;
+};
+
+const buildImageUrl = (baseImageUrl, selectedFolder) => {
+	const imageNumber = Math.floor(Math.random() * selectedFolder.count) + 1;
+	const imageFilename = `${String(imageNumber).padStart(6, "0")}.webp`;
+	return `${baseImageUrl}${selectedFolder.device}-${selectedFolder.brightness}/${selectedFolder.theme}/${imageFilename}`;
+};
+
+const respondImageByMethod = async (method, imageUrl) => {
+	if (method === "redirect") {
+		return new Response(null, {
+			status: 302,
+			headers: { Location: imageUrl },
+		});
+	}
+
+	try {
+		const upstreamResponse = await fetch(imageUrl);
+
+		if (!upstreamResponse.ok) {
+			return detailedErrorResponse(RANDOM_IMG_ERRORS.UPSTREAM_BAD_STATUS, {
+				upstreamStatus: upstreamResponse.status,
+				upstreamStatusText: upstreamResponse.statusText || undefined,
+				hint: "Upstream responded but did not return a success status",
+			});
+		}
+
+		const headers = new Headers(upstreamResponse.headers);
+		if (!headers.has("Cache-Control")) {
+			headers.set("Cache-Control", "public, max-age=3600");
+		}
+
+		return new Response(upstreamResponse.body, {
+			status: upstreamResponse.status,
+			headers,
+		});
+	} catch {
+		return detailedErrorResponse(RANDOM_IMG_ERRORS.UPSTREAM_FETCH_EXCEPTION, {
+			hint: "Upstream request failed before receiving a valid response",
+		});
+	}
 };
 
 // ===========================
@@ -240,7 +277,7 @@ export const handleRandomImg = async (request) => {
 
 	// 第一步：优先校验链接参数合法性，再做后续处理
 	// 执行参数白名单校验，返回值为 null 或错误响应对象。
-	const invalidParamsResponse = validateAllowedQueryParams(params, RANDOM_IMG_CONFIG.ALLOWED_PARAMS);
+	const invalidParamsResponse = validateAllowedQueryParams(params, ALLOWED_PARAMS_SET);
 	// 若存在非法参数，直接返回错误响应并中止流程。
 	if (invalidParamsResponse) {
 		return invalidParamsResponse;
@@ -251,28 +288,31 @@ export const handleRandomImg = async (request) => {
 
 	// 校验 method 参数：仅允许 proxy 或 redirect（优先返回，避免无效请求触发 KV 读取）
 	// 判断 method 是否在允许集合内。
-	if (!RANDOM_IMG_CONFIG.VALID_METHODS.has(method)) {
-		return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_METHOD, "m", method, VALID_METHODS_LIST);
+	if (!METHOD_SET.has(method)) {
+		return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_METHOD, "m", method, METHOD_VALUES);
 	}
 
 	// 读取请求指定的设备参数（若未传则为 null）。
 	const requestedDevice = params.get("d")?.toLowerCase() || null;
 	// 若传入了设备参数，则校验其是否属于请求允许集合。
-	if (requestedDevice && !RANDOM_IMG_CONFIG.REQUEST_VALID_DEVICES.has(requestedDevice)) {
-		return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_DEVICE, "d", requestedDevice, REQUEST_VALID_DEVICES_LIST);
+	if (requestedDevice && !REQUEST_DEVICE_SET.has(requestedDevice)) {
+		return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_DEVICE, "d", requestedDevice, REQUEST_DEVICES);
 	}
 
-	// 读取 User-Agent 以便在未指定设备时做端侧推断。
-	const userAgent = request.headers.get("User-Agent") || "";
-	// 通过 UA 关键字判断是否移动端。
-	const isMobile = /Mobi|Android|iPhone/i.test(userAgent);
-	// 优先使用显式设备参数，否则按 UA 推断默认设备。
-	const device = requestedDevice || (isMobile ? "mb" : "pc");
+	// 设备选择优先级：用户输入 > UA 自动判断 > r（随机设备）。
+	let autoDevice = "r";
+	if (!requestedDevice) {
+		const userAgent = request.headers.get("User-Agent") || "";
+		const isMobile = /Mobi|Android|iPhone/i.test(userAgent);
+		const isDesktop = /Windows|Macintosh|Linux x86_64|X11/i.test(userAgent);
+		autoDevice = isMobile ? "mb" : (isDesktop ? "pc" : "r");
+	}
+	const device = requestedDevice || autoDevice;
 	// 读取亮度参数（若未传则为 null）。
 	const requestedBrightness = params.get("b")?.toLowerCase() || null;
 	// 若传入亮度参数，则校验其合法性。
-	if (requestedBrightness && !RANDOM_IMG_CONFIG.VALID_BRIGHTNESS.has(requestedBrightness)) {
-		return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_BRIGHTNESS, "b", requestedBrightness, VALID_BRIGHTNESS_LIST);
+	if (requestedBrightness && !BRIGHTNESS_SET.has(requestedBrightness)) {
+		return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_BRIGHTNESS, "b", requestedBrightness, BRIGHTNESS_VALUES);
 	}
 
 	// 读取并归一化 theme 参数：支持多次传参与逗号分隔，最终去重。
@@ -285,12 +325,12 @@ export const handleRandomImg = async (request) => {
 	// 处理 device 参数
 	const deviceCandidates =
 		device === "r"
-			? FOLDER_MAP_VALID_DEVICES_LIST
+			? MAP_DEVICES
 			: [device];
 
 	// 处理 brightness 参数
 	// 若指定亮度则只用该值，否则使用全部亮度候选。
-	const brightnessCandidates = requestedBrightness ? [requestedBrightness] : VALID_BRIGHTNESS_LIST;
+	const brightnessCandidates = requestedBrightness ? [requestedBrightness] : BRIGHTNESS_VALUES;
 
 	// 读取并校验 FOLDER_MAP 配置。
 	const { folderMap, errorKey: folderMapErrorKey } = await getFolderMapFromKV();
@@ -300,39 +340,32 @@ export const handleRandomImg = async (request) => {
 	}
 
 	// 处理 theme 参数
-	// 从 FOLDER_MAP 中汇总全部有效主题并做去重。
-	const validThemes = Array.from(
-		new Set(
-			Object.values(folderMap).flatMap((deviceMap) =>
-				Object.values(deviceMap ?? {}).flatMap((brightnessMap) =>
-					Object.keys(brightnessMap ?? {})
-				)
-			)
-		)
-	);
-	// 将有效主题数组转为 Set 以提升校验效率。
-	const validThemesSet = new Set(validThemes);
-	// 找到首个非法主题（若均合法则为 undefined）。
-	const invalidTheme = themeParams.find((candidateTheme) => !validThemesSet.has(candidateTheme));
-	// 若存在非法主题参数，则返回字段错误响应。
-	if (invalidTheme) {
-		return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_THEME, "t", invalidTheme, validThemes);
+	let themeCandidates;
+	if (themeParams.length > 0) {
+		// 按需验证：仅检查请求中的主题是否在配置中存在（Set 查找）。
+		const validThemeSet = getValidThemeSet(folderMap);
+		const invalidTheme = themeParams.find((candidateTheme) => !validThemeSet.has(candidateTheme));
+		if (invalidTheme) {
+			return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_THEME, "t", invalidTheme, getValidThemes(folderMap));
+		}
+		themeCandidates = themeParams;
+	} else {
+		// 未传 t 时，才构建并使用全量主题候选。
+		themeCandidates = getValidThemes(folderMap);
 	}
-	// 若请求未指定主题，则默认以所有有效主题作为候选。
-	const themeCandidates = themeParams.length > 0 ? themeParams : validThemes;
 
 	// 初始化候选组合列表，用于后续加权随机抽样。
 	const candidates = [];
 	// 遍历设备候选集合。
 	for (const candidateDevice of deviceCandidates) {
 		// 读取当前设备下的配置映射。
-		const deviceMap = folderMap[candidateDevice];
+		const deviceMap = folderMap[candidateDevice] ?? {};
 		// 遍历亮度候选集合。
 		for (const b of brightnessCandidates) {
 			// 遍历主题候选集合。
 			for (const t of themeCandidates) {
 				// 读取当前组合的图片数量，缺省按 0 处理。
-				const count = deviceMap[b]?.[t] ?? 0;
+				const count = deviceMap?.[b]?.[t] ?? 0;
 				// 仅将 count 大于 0 的组合纳入候选池。
 				if (count > 0) {
 					candidates.push({ device: candidateDevice, brightness: b, theme: t, count });
@@ -359,21 +392,34 @@ export const handleRandomImg = async (request) => {
 		});
 	}
 
-	// 加权抽样：按 count 作为权重选择候选组合，保证“每张图”更接近等概率
-	// 计算候选池总权重（各组合 count 之和）。
-	const totalWeight = candidates.reduce((sum, candidate) => sum + candidate.count, 0);
-	// 在 [1, totalWeight] 区间生成随机权重点。
-	const randomWeight = Math.floor(Math.random() * totalWeight) + 1;
-	// 初始化累积权重，用于定位命中的候选组合。
-	let accumulatedWeight = 0;
-	// 预置默认选中项，保证变量始终有值。
-	let selectedFolder = candidates[0];
-	// 线性累积权重，命中随机权重点时结束循环。
-	for (const candidate of candidates) {
-		accumulatedWeight += candidate.count;
-		if (accumulatedWeight >= randomWeight) {
-			selectedFolder = candidate;
-			break;
+	let selectedFolder;
+	if (candidates.length === 1) {
+		selectedFolder = candidates[0];
+	} else {
+		// 加权抽样：按 count 作为权重选择候选组合，保证“每张图”更接近等概率
+		// 计算候选池总权重（各组合 count 之和）。
+		const totalWeight = candidates.reduce((sum, candidate) => sum + candidate.count, 0);
+		// 权重异常兜底，避免 totalWeight 非法导致随机逻辑出错。
+		if (!Number.isFinite(totalWeight) || totalWeight <= 0) {
+			return detailedErrorResponse(RANDOM_IMG_ERRORS.NO_AVAILABLE_IMAGES, {
+				hint: "No valid weighted candidates available",
+			});
+		}
+		// 在 [0, totalWeight) 区间生成随机权重点，减少边界判断出错风险。
+		let remainingWeight = Math.random() * totalWeight;
+		// 命中结果初始化为 null，循环后再统一兜底。
+		selectedFolder = null;
+		// 线性递减权重，首次小于 0 时即命中当前候选项。
+		for (const candidate of candidates) {
+			remainingWeight -= candidate.count;
+			if (remainingWeight < 0) {
+				selectedFolder = candidate;
+				break;
+			}
+		}
+		// 浮点边界兜底：理论上不会触发，触发时选最后一个候选项。
+		if (!selectedFolder) {
+			selectedFolder = candidates[candidates.length - 1];
 		}
 	}
 
@@ -384,53 +430,7 @@ export const handleRandomImg = async (request) => {
 		return detailedErrorResponse(RANDOM_IMG_ERRORS.BASE_IMAGE_URL_CONFIG_ERROR, BASE_IMAGE_URL_CONFIG_ERROR_DETAILS);
 	}
 
-	// 随机选取图片编号
-	// 在当前选中目录范围内随机生成图片序号（从 1 开始）。
-	const imageNumber = Math.floor(Math.random() * selectedFolder.count) + 1;
-	// 生成固定 6 位补零文件名（如 000123.webp）。
-	const imageFilename = `${String(imageNumber).padStart(6, "0")}.webp`;
-	// 拼接最终上游图片 URL。
-	const imageUrl = `${baseImageUrl}${selectedFolder.device}-${selectedFolder.brightness}/${selectedFolder.theme}/${imageFilename}`;
-
-	// method=redirect 返回 302；method=proxy 透传图片内容
-	if (method === "redirect") {
-		return new Response(null, {
-			status: 302,
-			headers: { Location: imageUrl },
-		});
-	}
-
-	try {
-		// 以 proxy 方式请求上游图片资源。
-		const upstreamResponse = await fetch(imageUrl);
-
-		// 上游返回非 2xx 时，转换为统一 502 错误响应。
-		if (!upstreamResponse.ok) {
-			return detailedErrorResponse(RANDOM_IMG_ERRORS.UPSTREAM_BAD_STATUS, {
-				upstreamStatus: upstreamResponse.status,
-				upstreamStatusText: upstreamResponse.statusText || undefined,
-				hint: "Upstream responded but did not return a success status",
-			});
-		}
-
-		// 复制上游响应头，尽量保留原始元数据。
-		const headers = new Headers(upstreamResponse.headers);
-		// 若上游未设置缓存头，则补一个默认缓存策略。
-		if (!headers.has("Cache-Control")) {
-			headers.set("Cache-Control", "public, max-age=3600");
-		}
-
-		// 透传上游响应体与状态码给客户端。
-		return new Response(upstreamResponse.body, {
-			status: upstreamResponse.status,
-			headers,
-		});
-	} catch {
-		// 请求上游过程中发生运行时异常时返回统一 502 错误。
-		return detailedErrorResponse(RANDOM_IMG_ERRORS.UPSTREAM_FETCH_EXCEPTION, {
-			hint: "Upstream request failed before receiving a valid response",
-		});
-	}
+	return await respondImageByMethod(method, buildImageUrl(baseImageUrl, selectedFolder));
 };
 
 const buildRandomImgCountData = (folderMap) => {
