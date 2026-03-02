@@ -37,6 +37,7 @@ const RANDOM_IMG_ERRORS = {
 	INVALID_BRIGHTNESS: { status: 400, message: "Bad Request: Invalid brightness" },
 	INVALID_THEME: { status: 400, message: "Bad Request: Invalid theme" },
 	INVALID_METHOD: { status: 400, message: "Bad Request: Invalid method" },
+	INVALID_COUNT_REQUEST: { status: 403, message: "Forbidden: /random-img-count only accepts exact path without query parameters" },
 	BASE_IMAGE_URL_CONFIG_ERROR: { status: 500, message: "Internal Server Error: BASE_IMAGE_URL is invalid or missing in KV" },
 	FOLDER_MAP_CONFIG_ERROR: { status: 500, message: "Internal Server Error: FOLDER_MAP is invalid or missing in KV" },
 	NO_IMAGES_FOR_COMBINATION: { status: 404, message: "Not Found: No available images for the selected filters" },
@@ -86,12 +87,9 @@ let baseImageUrlCache = {
 	value: null,
 	expiresAt: 0,
 };
-let validThemesCache = {
-	value: null,
-	expiresAt: 0,
-};
-let validThemeSetCache = {
-	value: null,
+let validThemeCache = {
+	themes: null,
+	themeSet: null,
 	expiresAt: 0,
 };
 
@@ -128,33 +126,28 @@ const buildValidThemes = (folderMap) =>
 		)
 	);
 
-const getValidThemeSet = (folderMap) => {
-	if (validThemeSetCache.value && Date.now() < validThemeSetCache.expiresAt) {
-		return validThemeSetCache.value;
+const ensureValidThemeCache = (folderMap) => {
+	const now = Date.now();
+	if (validThemeCache.themes && now < validThemeCache.expiresAt) {
+		return validThemeCache;
 	}
-	const validThemes = getValidThemes(folderMap);
-	const validThemeSet = new Set(validThemes);
-	validThemeSetCache = {
-		value: validThemeSet,
-		expiresAt: Date.now() + KV_CACHE_TTL_MS,
+
+	const themes = buildValidThemes(folderMap);
+	validThemeCache = {
+		themes,
+		themeSet: new Set(themes),
+		expiresAt: now + KV_CACHE_TTL_MS,
 	};
-	return validThemeSet;
+
+	return validThemeCache;
+};
+
+const getValidThemeSet = (folderMap) => {
+	return ensureValidThemeCache(folderMap).themeSet;
 };
 
 const getValidThemes = (folderMap) => {
-	if (validThemesCache.value && Date.now() < validThemesCache.expiresAt) {
-		return validThemesCache.value;
-	}
-	const validThemes = buildValidThemes(folderMap);
-	validThemesCache = {
-		value: validThemes,
-		expiresAt: Date.now() + KV_CACHE_TTL_MS,
-	};
-	validThemeSetCache = {
-		value: new Set(validThemes),
-		expiresAt: Date.now() + KV_CACHE_TTL_MS,
-	};
-	return validThemes;
+	return ensureValidThemeCache(folderMap).themes;
 };
 
 // 读取并校验 FOLDER_MAP，优先命中内存缓存并返回统一的 { folderMap, errorKey } 结构。
@@ -192,8 +185,7 @@ const getFolderMapFromKV = async () => {
 		value: parsed,
 		expiresAt,
 	};
-	validThemesCache = { value: null, expiresAt: 0 };
-	validThemeSetCache = { value: null, expiresAt: 0 };
+	validThemeCache = { themes: null, themeSet: null, expiresAt: 0 };
 	// 缓存写回：后续同实例请求在 TTL 内可直接命中
 
 	return { folderMap: parsed, errorKey: null };
@@ -364,10 +356,10 @@ export const handleRandomImg = async (request) => {
 		for (const b of brightnessCandidates) {
 			// 遍历主题候选集合。
 			for (const t of themeCandidates) {
-				// 读取当前组合的图片数量，缺省按 0 处理。
-				const count = deviceMap?.[b]?.[t] ?? 0;
-				// 仅将 count 大于 0 的组合纳入候选池。
-				if (count > 0) {
+				// 读取当前组合的图片数量并归一化为数值，缺省按 0 处理。
+				const count = Number(deviceMap?.[b]?.[t] ?? 0);
+				// 仅将有限且大于 0 的组合纳入候选池。
+				if (Number.isFinite(count) && count > 0) {
 					candidates.push({ device: candidateDevice, brightness: b, theme: t, count });
 				}
 			}
@@ -468,11 +460,11 @@ const buildRandomImgCountData = (folderMap) => {
 export const handleRandomImgCount = async (request) => {
 	const url = new URL(request.url);
 	if (url.pathname !== "/random-img-count" || url.search) {
-		return new Response(null, { status: 403 });
+		return detailedErrorResponse(RANDOM_IMG_ERRORS.INVALID_COUNT_REQUEST);
 	}
 	const { folderMap, errorKey: folderMapErrorKey } = await getFolderMapFromKV();
 	if (folderMapErrorKey) {
-		return new Response(null, { status: 204 });
+		return detailedErrorResponse(RANDOM_IMG_ERRORS[folderMapErrorKey], FOLDER_MAP_CONFIG_ERROR_DETAILS);
 	}
 	return jsonSuccessResponse(buildRandomImgCountData(folderMap));
 };

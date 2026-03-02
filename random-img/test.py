@@ -71,6 +71,7 @@ class ApiTester:
             "INVALID_BRIGHTNESS": False,
             "INVALID_METHOD": False,
             "INVALID_THEME": False,
+            "INVALID_COUNT_REQUEST": False,
             "NO_IMAGES_FOR_COMBINATION": False,
             "NO_AVAILABLE_IMAGES": False,
             "NOT_FOUND": False,
@@ -177,6 +178,8 @@ class ApiTester:
             self.error_coverage["INVALID_METHOD"] = True
         elif "Invalid theme" in message:
             self.error_coverage["INVALID_THEME"] = True
+        elif "/random-img-count only accepts exact path without query parameters" in message:
+            self.error_coverage["INVALID_COUNT_REQUEST"] = True
         elif "No available images for the selected filters" in message:
             self.error_coverage["NO_IMAGES_FOR_COMBINATION"] = True
         elif "No available images" in message:
@@ -294,10 +297,11 @@ class ApiTester:
         self.assert_true(sum_theme == int(count_data.get("totalImages", -1)), "totalImages == sum(themeTotals)")
 
         # /random-img-count 仅允许精确路径且无 query
-        self.expect_empty_status(
+        self.expect_json_error(
             "/random-img-count",
             {"x": "1"},
             403,
+            "only accepts exact path without query parameters",
             "GET /random-img-count with query forbidden",
         )
 
@@ -716,6 +720,7 @@ class ApiTester:
             "INVALID_BRIGHTNESS",
             "INVALID_METHOD",
             "INVALID_THEME",
+            "INVALID_COUNT_REQUEST",
             "NOT_FOUND",
         }
         optional_error_keys = {"NO_IMAGES_FOR_COMBINATION", "NO_AVAILABLE_IMAGES"}
