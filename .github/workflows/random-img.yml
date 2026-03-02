@@ -7,7 +7,7 @@ on:
 jobs:
   random-img-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     permissions:
       contents: read
     env:
@@ -33,7 +33,9 @@ jobs:
             exit 1
           fi
 
+      - name: Wait for deployment propagation
+        run: sleep 60
+
       - name: Run test
         shell: bash
-        run: |
-          python random-img/test.py
+        run: python random-img/test.py
