@@ -218,7 +218,7 @@ const getBaseImageUrlFromKV = async () => {
 
 const buildImageUrl = (baseImageUrl, selectedFolder) => {
 	const imageNumber = Math.floor(Math.random() * selectedFolder.count) + 1;
-	const imageFilename = `${String(imageNumber).padStart(6, "0")}.webp`;
+	const imageFilename = `${String(imageNumber).padStart(5, "0")}.webp`;
 	return `${baseImageUrl}${selectedFolder.device}-${selectedFolder.brightness}/${selectedFolder.theme}/${imageFilename}`;
 };
 
