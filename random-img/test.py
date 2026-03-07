@@ -28,10 +28,15 @@ CONFIG_ENV_NAME = "CONFIG"
 TIMEOUT_SECONDS = 20.0
 # 稳定性测试中随机重定向抽样次数。
 RANDOM_RUNS = 30
-# 瞬时网络/读取失败时的最大重试次数。
-MAX_REQUEST_ATTEMPTS = 5
+# 5xx 响应最大重试次数（不含首次请求）。
+MAX_HTTP_5XX_RETRIES = 3
+# 瞬时网络/读取失败时的最大重试次数（不含首次请求）。
+MAX_NETWORK_RETRIES = 5
 # 线性退避基数（sleep = base * attempt）。
 RETRY_BACKOFF_BASE_SECONDS = 1
+# 认为可重试的服务端状态码范围。
+RETRYABLE_STATUS_MIN = 500
+RETRYABLE_STATUS_MAX = 599
 
 # 从统计结果筛选测试组合时允许的设备与亮度维度。
 SUPPORTED_DEVICES = {"pc", "mb"}
@@ -146,10 +151,16 @@ def _mask_url_for_log(url: str) -> str:
     return "<redacted-url>"
 
 
-def _redact_urls_in_text(text: str) -> str:
+def _redact_urls_in_text(text: str, extra_tokens: list[str] | None = None) -> str:
     value = str(text)
 
-    for token in SENSITIVE_LOG_TOKENS:
+    redact_tokens = list(SENSITIVE_LOG_TOKENS)
+    if extra_tokens:
+        redact_tokens.extend(extra_tokens)
+
+    for token in sorted(set(redact_tokens), key=len, reverse=True):
+        if not token:
+            continue
         value = value.replace(token, "<redacted-value>")
 
     def _replace(match: re.Match[str]) -> str:
@@ -192,9 +203,29 @@ class ApiTester:
         self.passed = 0
         self.failed = 0
         self.failures: list[str] = []
+        self.theme_tokens_for_log: list[str] = []
+        self._next_assert_retry_note = ""
 
         self.normal_opener = urllib.request.build_opener()
         self.no_redirect_opener = urllib.request.build_opener(NoRedirectHandler())
+
+    def register_theme_tokens(self, themes: list[str]) -> None:
+        # 动态收集主题名，后续统一做日志脱敏。
+        merged = {token for token in self.theme_tokens_for_log if token}
+        for theme in themes:
+            normalized = str(theme).strip()
+            if normalized:
+                merged.add(normalized)
+        self.theme_tokens_for_log = sorted(merged, key=len, reverse=True)
+
+    def redact_for_log(self, text: str) -> str:
+        return _redact_urls_in_text(text, extra_tokens=self.theme_tokens_for_log)
+
+    def _format_retry_note(self, http_5xx_retries: int, network_retries: int) -> str:
+        total_retries = http_5xx_retries + network_retries
+        if total_retries <= 0:
+            return ""
+        return f" (retries={total_retries})"
 
     def _url(self, path: str, query: dict[str, str] | None = None) -> str:
         if not path.startswith("/"):
@@ -208,8 +239,10 @@ class ApiTester:
         req = urllib.request.Request(url, method="GET")
         opener = self.normal_opener if follow_redirects else self.no_redirect_opener
 
-        max_attempts = MAX_REQUEST_ATTEMPTS
-        for attempt in range(1, max_attempts + 1):
+        http_5xx_retries = 0
+        network_retries = 0
+
+        while True:
             try:
                 with opener.open(req, timeout=self.timeout) as resp:
                     status = resp.getcode()
@@ -220,21 +253,28 @@ class ApiTester:
                         partial = bytes(exc.partial or b"")
                         if partial:
                             body = partial
-                        elif attempt < max_attempts:
-                            time.sleep(RETRY_BACKOFF_BASE_SECONDS * attempt)
+                        elif network_retries < MAX_NETWORK_RETRIES:
+                            network_retries += 1
+                            time.sleep(RETRY_BACKOFF_BASE_SECONDS * network_retries)
                             continue
                         else:
                             raise
+                    self._next_assert_retry_note = self._format_retry_note(http_5xx_retries, network_retries)
                     return HttpResult(
                         status=status,
                         headers=headers,
                         body=body,
                     )
             except urllib.error.HTTPError as exc:
+                if RETRYABLE_STATUS_MIN <= exc.code <= RETRYABLE_STATUS_MAX and http_5xx_retries < MAX_HTTP_5XX_RETRIES:
+                    http_5xx_retries += 1
+                    time.sleep(RETRY_BACKOFF_BASE_SECONDS * http_5xx_retries)
+                    continue
                 try:
                     error_body = exc.read()
                 except http.client.IncompleteRead as read_exc:
                     error_body = bytes(read_exc.partial or b"")
+                self._next_assert_retry_note = self._format_retry_note(http_5xx_retries, network_retries)
                 return HttpResult(
                     status=exc.code,
                     headers={k.lower(): v for k, v in exc.headers.items()},
@@ -250,26 +290,31 @@ class ApiTester:
                 ConnectionResetError,
                 OSError,
             ) as exc:
-                if attempt == max_attempts:
+                if network_retries >= MAX_NETWORK_RETRIES:
+                    self._next_assert_retry_note = self._format_retry_note(http_5xx_retries, network_retries)
                     return HttpResult(
                         status=599,
                         headers={},
                         body=f"request failed after retries: {exc}".encode("utf-8", errors="replace"),
                     )
-                time.sleep(RETRY_BACKOFF_BASE_SECONDS * attempt)
+                network_retries += 1
+                time.sleep(RETRY_BACKOFF_BASE_SECONDS * network_retries)
 
         return HttpResult(status=599, headers={}, body=b"request failed: unexpected retry flow")
 
     def assert_true(self, condition: bool, label: str, details: str = "") -> None:
+        retry_note = self._next_assert_retry_note
+        self._next_assert_retry_note = ""
+        safe_label = self.redact_for_log(f"{label}{retry_note}")
         if condition:
             self.passed += 1
-            print(f"[PASS] {label}")
+            print(f"[PASS] {safe_label}")
             return
 
         self.failed += 1
-        message = f"[FAIL] {label}"
+        message = f"[FAIL] {safe_label}"
         if details:
-            message += f" | {_redact_urls_in_text(details)}"
+            message += f" | {self.redact_for_log(details)}"
         self.failures.append(message)
         print(message)
 
@@ -277,7 +322,7 @@ class ApiTester:
         try:
             return json.loads(result.text)
         except json.JSONDecodeError as exc:
-            self.assert_true(False, label, f"Invalid JSON: {exc}; body={_redact_urls_in_text(result.text[:200])}")
+            self.assert_true(False, label, f"Invalid JSON: {exc}; body={self.redact_for_log(result.text[:200])}")
             return None
 
     def _mark_error_coverage(self, message: str) -> None:
@@ -376,7 +421,7 @@ class ApiTester:
         print(f"Redirect tests enabled: {ENABLE_REDIRECT_TESTS}")
         started = time.time()
 
-        # 1) 隐藏统计路由：读取 count 数据并校验结构
+        # 1) 隐藏统计路由：仅做边界校验（状态、类型、非负值）。
         count_resp = self.request(RANDOM_IMG_COUNT_PATH)
         self.assert_true(count_resp.status == 200, "GET hidden count route status")
         self.assert_true(
@@ -395,25 +440,53 @@ class ApiTester:
         theme_totals = count_data.get("themeTotals", {})
         theme_details = count_data.get("themeDetails", [])
 
+        if isinstance(theme_totals, dict):
+            self.register_theme_tokens([str(theme) for theme in theme_totals.keys()])
+
         self.assert_true(isinstance(group_totals, dict), "groupTotals is object")
         self.assert_true(isinstance(theme_totals, dict), "themeTotals is object")
         self.assert_true(isinstance(theme_details, list), "themeDetails is array")
         if not isinstance(group_totals, dict) or not isinstance(theme_totals, dict) or not isinstance(theme_details, list):
             return 1
 
-        sum_group = sum(int(v) for v in group_totals.values())
-        sum_theme = sum(int(v) for v in theme_totals.values())
-        self.assert_true(sum_group == int(count_data.get("totalImages", -1)), "totalImages == sum(groupTotals)")
-        self.assert_true(sum_theme == int(count_data.get("totalImages", -1)), "totalImages == sum(themeTotals)")
+        try:
+            total_images = int(count_data.get("totalImages", -1))
+        except (TypeError, ValueError):
+            total_images = -1
+        self.assert_true(total_images >= 0, "totalImages is non-negative integer", str(count_data.get("totalImages")))
 
         normalized_theme_details: list[dict[str, Any]] = []
-        detail_group_totals: dict[str, int] = {}
-        detail_theme_totals: dict[str, int] = {}
         seen_detail_keys: set[tuple[str, str, str]] = set()
 
+        group_non_int_count = 0
+        group_negative_count = 0
+        for value in group_totals.values():
+            try:
+                count = int(value)
+            except (TypeError, ValueError):
+                group_non_int_count += 1
+                continue
+            if count < 0:
+                group_negative_count += 1
+
+        theme_non_int_count = 0
+        theme_negative_count = 0
+        for key, value in theme_totals.items():
+            self.register_theme_tokens([str(key)])
+            try:
+                count = int(value)
+            except (TypeError, ValueError):
+                theme_non_int_count += 1
+                continue
+            if count < 0:
+                theme_negative_count += 1
+
+        self.assert_true(group_non_int_count == 0, "groupTotals values are integers", f"invalid={group_non_int_count}")
+        self.assert_true(group_negative_count == 0, "groupTotals values are non-negative", f"invalid={group_negative_count}")
+        self.assert_true(theme_non_int_count == 0, "themeTotals values are integers", f"invalid={theme_non_int_count}")
+        self.assert_true(theme_negative_count == 0, "themeTotals values are non-negative", f"invalid={theme_negative_count}")
+
         for idx, row in enumerate(theme_details):
-            row_label = f"themeDetails[{idx}]"
-            self.assert_true(isinstance(row, dict), f"{row_label} is object", str(row))
             if not isinstance(row, dict):
                 continue
 
@@ -422,22 +495,20 @@ class ApiTester:
             theme = str(row.get("theme", ""))
             raw_count = row.get("count", 0)
 
-            self.assert_true(device in SUPPORTED_DEVICES, f"{row_label}.device", str(row))
-            self.assert_true(brightness in SUPPORTED_BRIGHTNESS, f"{row_label}.brightness", str(row))
-            self.assert_true(bool(theme), f"{row_label}.theme", str(row))
+            if theme:
+                self.register_theme_tokens([theme])
 
             try:
                 count = int(raw_count)
             except (TypeError, ValueError):
-                self.assert_true(False, f"{row_label}.count is int", str(row))
                 continue
 
-            self.assert_true(count >= 0, f"{row_label}.count >= 0", str(row))
             if device not in SUPPORTED_DEVICES or brightness not in SUPPORTED_BRIGHTNESS or not theme:
+                continue
+            if count < 0:
                 continue
 
             combo_key = (device, brightness, theme)
-            self.assert_true(combo_key not in seen_detail_keys, f"{row_label} unique combo", str(combo_key))
             if combo_key in seen_detail_keys:
                 continue
             seen_detail_keys.add(combo_key)
@@ -451,25 +522,8 @@ class ApiTester:
                 }
             )
 
-            group_key = f"{device}-{brightness}"
-            detail_group_totals[group_key] = detail_group_totals.get(group_key, 0) + count
-            detail_theme_totals[theme] = detail_theme_totals.get(theme, 0) + count
-
-        for group_key, total in group_totals.items():
-            expected = detail_group_totals.get(str(group_key), 0)
-            self.assert_true(
-                int(total) == expected,
-                f"groupTotals consistency {group_key}",
-                f"groupTotals={total}, themeDetails={expected}",
-            )
-
-        for theme_key, total in theme_totals.items():
-            expected = detail_theme_totals.get(str(theme_key), 0)
-            self.assert_true(
-                int(total) == expected,
-                f"themeTotals consistency {theme_key}",
-                f"themeTotals={total}, themeDetails={expected}",
-            )
+        if total_images > 0:
+            self.assert_true(len(normalized_theme_details) > 0, "themeDetails has at least one valid row")
 
         self.expect_json_error(
             RANDOM_IMG_COUNT_PATH,

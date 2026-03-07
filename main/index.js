@@ -16,10 +16,8 @@ const GLOBAL_ERRORS = {
 // 可配置参数（优先编辑此区域）
 // ===========================
 const PATH_CONFIG_NAMESPACE = "path-config";
-const RANDOM_IMG_COUNT_PATH_KEY = "RANDOM_IMG_COUNT_PATH";
-
-// 隐藏路由入口注册：新增隐藏路由时仅需在此追加 PATH_KEY。
-const HIDDEN_PATH_KEYS = [RANDOM_IMG_COUNT_PATH_KEY];
+// 隐藏路由入口注册：新增隐藏路由时仅需在此追加 KV key 字符串。
+const HIDDEN_PATH_KEYS = ["RANDOM_IMG_COUNT_PATH"];
 
 // 普通路由入口注册：
 // - 固定 handler: 直接传函数
