@@ -1,5 +1,6 @@
-import { handleRandomImg, handleRandomImgCount } from "../random-img/function.js";
-import { jsonErrorResponse, jsonSuccessResponse } from "./response.js";
+import * as randomImgHandlers from "../random-img/function.js";
+import { getKvTextCached } from "./kv.js";
+import { detailedErrorResponse, jsonErrorResponse, jsonSuccessResponse } from "./response.js";
 
 // ===========================
 // 全局错误定义
@@ -7,21 +8,153 @@ import { jsonErrorResponse, jsonSuccessResponse } from "./response.js";
 const GLOBAL_ERRORS = {
 	NOT_FOUND: { status: 404, message: "API Not Found" },
 	INTERNAL_ERROR: { status: 500, message: "Internal Server Error" },
+	HIDDEN_ROUTE_QUERY_NOT_ALLOWED: { status: 403, message: "Forbidden: Routes do not accept query parameters" },
+	HIDDEN_ROUTE_HANDLER_NOT_FOUND: { status: 500, message: "Internal Server Error: Route handler is not configured" },
 };
 
 // ===========================
-// 路由配置
+// 可配置参数（优先编辑此区域）
 // ===========================
-const routes = {
-	// 根路径统一按未找到处理，避免暴露额外信息。
+const PATH_CONFIG_NAMESPACE = "path-config";
+const RANDOM_IMG_COUNT_PATH_KEY = "RANDOM_IMG_COUNT_PATH";
+
+// 隐藏路由入口注册：新增隐藏路由时仅需在此追加 PATH_KEY。
+const HIDDEN_PATH_KEYS = [RANDOM_IMG_COUNT_PATH_KEY];
+
+// 普通路由入口注册：
+// - 固定 handler: 直接传函数
+// - 业务模块: 传模块导出对象，按 handleXxx 自动匹配
+const ROUTES = {
 	"/": async () => jsonErrorResponse(GLOBAL_ERRORS.NOT_FOUND),
-	// 基础示例接口，用于快速验证 JSON 成功响应链路。
 	"/hello": async () => jsonSuccessResponse({ message: "Hello, World!" }),
-	// 健康检查接口，用于监控系统判断边缘函数存活状态。
 	"/healthcheck": async () => jsonSuccessResponse({ message: "API on EdgeFunction is healthy" }),
-	// 随机图片业务入口，交由 random-img 模块统一处理。
-	"/random-img": handleRandomImg,
-	"/random-img-count": handleRandomImgCount,
+	"/random-img": randomImgHandlers,
+};
+
+const routeHandlerCache = new Map();
+let hiddenHandlerMapPromise = null;
+let hiddenHandlerValidationLogged = false;
+
+const toPascalCase = (value) =>
+	value
+		.split(/[-_]/)
+		.filter(Boolean)
+		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.join("");
+
+const toHandlerNameFromRoutePath = (routePath) => {
+	const normalizedPath = routePath.replace(/^\/+/, "");
+	return `handle${toPascalCase(normalizedPath)}`;
+};
+
+// 约定：KV key `XXX_PATH` 对应 handler `handleXxx`。
+const toHiddenHandlerName = (kvPathKey) =>
+	`handle${toPascalCase(kvPathKey.replace(/_PATH$/, "").toLowerCase())}`;
+
+const getRegisteredRouteModules = () =>
+	Array.from(new Set(Object.values(ROUTES).filter((value) => value && typeof value === "object")));
+
+const resolveRouteHandler = async (pathname) => {
+	if (routeHandlerCache.has(pathname)) {
+		return routeHandlerCache.get(pathname);
+	}
+
+	const routeEntry = ROUTES[pathname];
+	if (!routeEntry) {
+		return null;
+	}
+
+	if (typeof routeEntry === "function") {
+		routeHandlerCache.set(pathname, routeEntry);
+		return routeEntry;
+	}
+
+	if (!routeEntry || typeof routeEntry !== "object") {
+		return null;
+	}
+
+	const handlerName = toHandlerNameFromRoutePath(pathname);
+	const handler = routeEntry[handlerName];
+	if (typeof handler === "function") {
+		routeHandlerCache.set(pathname, handler);
+		return handler;
+	}
+
+	return null;
+};
+
+const resolveHiddenHandler = async (kvPathKey) => {
+	if (!hiddenHandlerMapPromise) {
+		hiddenHandlerMapPromise = (async () => {
+			const map = new Map();
+			const unresolvedPathKeys = [];
+			for (const pathKey of HIDDEN_PATH_KEYS) {
+				const handlerName = toHiddenHandlerName(pathKey);
+				let resolved = false;
+				for (const moduleExports of getRegisteredRouteModules()) {
+					const handler = moduleExports[handlerName];
+					if (typeof handler === "function") {
+						map.set(pathKey, handler);
+						resolved = true;
+						break;
+					}
+				}
+
+				if (!resolved) {
+					unresolvedPathKeys.push(pathKey);
+				}
+			}
+
+			if (unresolvedPathKeys.length > 0 && !hiddenHandlerValidationLogged) {
+				hiddenHandlerValidationLogged = true;
+				console.warn(
+					"Hidden route handler mapping missing for keys:",
+					unresolvedPathKeys.join(", ")
+				);
+			}
+
+			return map;
+		})();
+	}
+
+	const hiddenHandlerMap = await hiddenHandlerMapPromise;
+	if (hiddenHandlerMap.has(kvPathKey)) {
+		return hiddenHandlerMap.get(kvPathKey);
+	}
+
+	return null;
+};
+
+// 命中隐藏路径时返回对应响应，未命中返回 null。
+const resolveHiddenPathRoute = async (url, request) => {
+	const { pathname, search } = url;
+
+	for (const pathKey of HIDDEN_PATH_KEYS) {
+		const dynamicPath = await getKvTextCached({
+			namespace: PATH_CONFIG_NAMESPACE,
+			key: pathKey,
+			cacheKey: `path-config::${pathKey}`,
+		});
+
+		if (dynamicPath && pathname === dynamicPath) {
+			if (search) {
+				return detailedErrorResponse(GLOBAL_ERRORS.HIDDEN_ROUTE_QUERY_NOT_ALLOWED, {
+					hint: "Call hidden routes with exact path and no query string",
+				});
+			}
+
+			const handler = await resolveHiddenHandler(pathKey);
+			if (handler) {
+				return await handler(request);
+			}
+
+			return detailedErrorResponse(GLOBAL_ERRORS.HIDDEN_ROUTE_HANDLER_NOT_FOUND, {
+				hint: "Check hidden route key to handler naming convention",
+			});
+		}
+	}
+
+	return null;
 };
 
 // ===========================
@@ -31,11 +164,17 @@ export default {
 	// 边缘函数主入口：按 pathname 分发路由并兜底处理未捕获异常。
 	async fetch(request) {
 		try {
-			const { pathname } = new URL(request.url);
-			const handler = routes[pathname];
+			const url = new URL(request.url);
+			const { pathname } = url;
+			const handler = await resolveRouteHandler(pathname);
 
 			if (handler) {
 				return await handler(request);
+			}
+
+			const hiddenPathResponse = await resolveHiddenPathRoute(url, request);
+			if (hiddenPathResponse) {
+				return hiddenPathResponse;
 			}
 
 			return jsonErrorResponse(GLOBAL_ERRORS.NOT_FOUND);

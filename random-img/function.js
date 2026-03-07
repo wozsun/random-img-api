@@ -1,4 +1,13 @@
 import { detailedErrorResponse, jsonSuccessResponse } from "../main/response.js";
+import {
+	KV_CACHE_TTL_MS,
+	getKvJsonObjectCached,
+	getKvNormalizedUrlCached,
+} from "../main/kv.js";
+
+const RANDOM_IMG_CONFIG_NAMESPACE = "random-img-config";
+const FOLDER_MAP_KEY = "FOLDER_MAP";
+const BASE_IMAGE_URL_KEY = "BASE_IMAGE_URL";
 
 // ===========================
 // 随机图片 API 配置
@@ -16,21 +25,6 @@ const REQUEST_DEVICE_SET = new Set(REQUEST_DEVICES);
 const BRIGHTNESS_SET = new Set(BRIGHTNESS_VALUES);
 const METHOD_SET = new Set(METHOD_VALUES);
 
-const BASE_IMAGE_URL_KEY = "BASE_IMAGE_URL";
-const FOLDER_MAP_KEY = "FOLDER_MAP";
-const KV_NAMESPACE = "random-img-config";
-const KV_CACHE_TTL_MS = 60 * 1000;
-
-const RANDOM_IMG_COUNT_PATH_KEY = "RANDOM_IMG_COUNT_PATH";
-
-// 懒初始化并复用同一个 EdgeKV 客户端：仅在真正读取 KV 时创建。
-let edgeKVClient = null;
-const getEdgeKVClient = () => {
-	if (!edgeKVClient) {
-		edgeKVClient = new EdgeKV({ namespace: KV_NAMESPACE });
-	}
-	return edgeKVClient;
-};
 
 // ===========================
 // 随机图片 API 错误定义
@@ -41,7 +35,6 @@ const RANDOM_IMG_ERRORS = {
 	INVALID_BRIGHTNESS: { status: 400, message: "Bad Request: Invalid brightness" },
 	INVALID_THEME: { status: 400, message: "Bad Request: Invalid theme" },
 	INVALID_METHOD: { status: 400, message: "Bad Request: Invalid method" },
-	INVALID_COUNT_REQUEST: { status: 403, message: "Forbidden: Image count path only accepts exact path without query parameters" },
 	BASE_IMAGE_URL_CONFIG_ERROR: { status: 500, message: "Internal Server Error: BASE_IMAGE_URL is invalid or missing in KV" },
 	FOLDER_MAP_CONFIG_ERROR: { status: 500, message: "Internal Server Error: FOLDER_MAP is invalid or missing in KV" },
 	NO_IMAGES_FOR_COMBINATION: { status: 404, message: "Not Found: No available images for the selected filters" },
@@ -52,13 +45,13 @@ const RANDOM_IMG_ERRORS = {
 
 const FOLDER_MAP_CONFIG_ERROR_DETAILS = {
 	configKey: FOLDER_MAP_KEY,
-	namespace: KV_NAMESPACE,
+	namespace: RANDOM_IMG_CONFIG_NAMESPACE,
 	hint: "Ensure FOLDER_MAP exists in KV and contains a valid JSON object",
 };
 
 const BASE_IMAGE_URL_CONFIG_ERROR_DETAILS = {
 	configKey: BASE_IMAGE_URL_KEY,
-	namespace: KV_NAMESPACE,
+	namespace: RANDOM_IMG_CONFIG_NAMESPACE,
 	hint: "Ensure BASE_IMAGE_URL exists in KV and is a non-empty URL string",
 };
 
@@ -82,38 +75,11 @@ const validateAllowedQueryParams = (params, allowedParams) => {
 	return null;
 };
 
-// 进程内缓存：仅在当前边缘实例复用，跨实例/冷启动不共享
-let folderMapCache = {
-	value: null,
-	expiresAt: 0,
-};
-let baseImageUrlCache = {
-	value: null,
-	expiresAt: 0,
-};
 let validThemeCache = {
 	themes: null,
 	themeSet: null,
 	expiresAt: 0,
-};
-
-// 从 KV 读取文本值并做 trim 归一化，读取失败或非字符串时返回 null。
-const getKvText = async (key) => {
-	try {
-		// 以文本模式读取指定 KV 键的值。
-		const value = await getEdgeKVClient().get(key, { type: "text" });
-		// 若读取结果不是字符串，则按无效值处理。
-		if (typeof value !== "string") {
-			return null;
-		}
-		// 去除字符串首尾空白以统一后续解析行为。
-		const trimmed = value.trim();
-		// 若去空白后为空字符串，则返回 null。
-		return trimmed || null;
-	} catch {
-		// 读取异常统一降级为 null，避免抛出运行时错误。
-		return null;
-	}
+	sourceRef: null,
 };
 
 // 从 FOLDER_MAP 汇总“全局有效主题”列表：
@@ -132,7 +98,7 @@ const buildValidThemes = (folderMap) =>
 
 const ensureValidThemeCache = (folderMap) => {
 	const now = Date.now();
-	if (validThemeCache.themes && now < validThemeCache.expiresAt) {
+	if (validThemeCache.themes && validThemeCache.sourceRef === folderMap && now < validThemeCache.expiresAt) {
 		return validThemeCache;
 	}
 
@@ -141,6 +107,7 @@ const ensureValidThemeCache = (folderMap) => {
 		themes,
 		themeSet: new Set(themes),
 		expiresAt: now + KV_CACHE_TTL_MS,
+		sourceRef: folderMap,
 	};
 
 	return validThemeCache;
@@ -154,71 +121,32 @@ const getValidThemes = (folderMap) => {
 	return ensureValidThemeCache(folderMap).themes;
 };
 
-// 读取并校验 FOLDER_MAP，优先命中内存缓存并返回统一的 { folderMap, errorKey } 结构。
+// 读取并校验 FOLDER_MAP 配置。
 const getFolderMapFromKV = async () => {
-	// 命中 TTL 时直接复用，减少 KV 读取与 JSON 解析成本
-	// 判断当前实例缓存是否仍在有效期。
-	if (folderMapCache.value && Date.now() < folderMapCache.expiresAt) {
-		return { folderMap: folderMapCache.value, errorKey: null };
-	}
+	const folderMap = await getKvJsonObjectCached({
+		namespace: RANDOM_IMG_CONFIG_NAMESPACE,
+		key: FOLDER_MAP_KEY,
+		cacheKey: "random-img::folder-map",
+		ttlMs: KV_CACHE_TTL_MS,
+	});
 
-	// 从 KV 拉取 FOLDER_MAP 原始文本。
-	const rawValue = await getKvText(FOLDER_MAP_KEY);
-	// 若 KV 未配置或读取为空，返回统一配置错误键。
-	if (!rawValue) {
+	if (!folderMap) {
 		return { folderMap: null, errorKey: "FOLDER_MAP_CONFIG_ERROR" };
 	}
 
-	// 声明解析结果变量，便于 try/catch 后统一使用。
-	let parsed;
-	try {
-		// 解析 JSON 文本为对象结构。
-		parsed = JSON.parse(rawValue);
-	} catch {
-		// JSON 解析失败时返回配置错误键。
-		return { folderMap: null, errorKey: "FOLDER_MAP_CONFIG_ERROR" };
-	}
-	// 轻量类型守卫：仅接受非数组对象，避免后续访问时报运行时错误。
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-		return { folderMap: null, errorKey: "FOLDER_MAP_CONFIG_ERROR" };
-	}
-
-	// 将合法配置写入本地缓存并刷新过期时间。
-	const expiresAt = Date.now() + KV_CACHE_TTL_MS;
-	folderMapCache = {
-		value: parsed,
-		expiresAt,
-	};
-	validThemeCache = { themes: null, themeSet: null, expiresAt: 0 };
-	// 缓存写回：后续同实例请求在 TTL 内可直接命中
-
-	return { folderMap: parsed, errorKey: null };
+	return { folderMap, errorKey: null };
 };
 
-// 读取 BASE_IMAGE_URL 并规范成以 `/` 结尾的可拼接基础地址（含本地缓存）。
+// 读取 BASE_IMAGE_URL 并规范成以 `/` 结尾的可拼接基础地址。
 const getBaseImageUrlFromKV = async () => {
-	// 若基础 URL 本地缓存仍有效，则直接复用。
-	if (baseImageUrlCache.value && Date.now() < baseImageUrlCache.expiresAt) {
-		return baseImageUrlCache.value;
-	}
-
-	// 从 KV 读取基础 URL 文本。
-	const normalizedUrl = await getKvText(BASE_IMAGE_URL_KEY);
-	// 若为空则表示配置缺失或无效。
-	if (!normalizedUrl) {
-		return null;
-	}
-
-	// 确保 URL 末尾包含 `/` 便于后续路径拼接。
-	const normalizedWithSlash = normalizedUrl.endsWith("/") ? normalizedUrl : `${normalizedUrl}/`;
-	// 写入本地缓存并设置过期时间。
-	baseImageUrlCache = {
-		value: normalizedWithSlash,
-		expiresAt: Date.now() + KV_CACHE_TTL_MS,
-	};
-
-	return normalizedWithSlash;
+	return getKvNormalizedUrlCached({
+		namespace: RANDOM_IMG_CONFIG_NAMESPACE,
+		key: BASE_IMAGE_URL_KEY,
+		cacheKey: "random-img::base-image-url",
+		ttlMs: KV_CACHE_TTL_MS,
+	});
 };
+
 
 const buildImageUrl = (baseImageUrl, selectedFolder) => {
 	const imageNumber = Math.floor(Math.random() * selectedFolder.count) + 1;
@@ -464,18 +392,6 @@ const buildRandomImgCountData = (folderMap) => {
 };
 
 export const handleRandomImgCount = async (request) => {
-	const url = new URL(request.url);
-	const randomImgCountPath = await getKvText(RANDOM_IMG_COUNT_PATH_KEY);
-	if (!randomImgCountPath) {
-		return detailedErrorResponse(RANDOM_IMG_ERRORS.FOLDER_MAP_CONFIG_ERROR, {
-			configKey: RANDOM_IMG_COUNT_PATH_KEY,
-			namespace: KV_NAMESPACE,
-			hint: "计数接口路径未配置，请在 KV 中设置 RANDOM_IMG_COUNT_PATH"
-		});
-	}
-	if (url.pathname !== randomImgCountPath || url.search) {
-		return detailedErrorResponse(RANDOM_IMG_ERRORS.INVALID_COUNT_REQUEST);
-	}
 	const { folderMap, errorKey: folderMapErrorKey } = await getFolderMapFromKV();
 	if (folderMapErrorKey) {
 		return detailedErrorResponse(RANDOM_IMG_ERRORS[folderMapErrorKey], FOLDER_MAP_CONFIG_ERROR_DETAILS);
