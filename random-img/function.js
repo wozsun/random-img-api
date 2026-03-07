@@ -17,8 +17,9 @@ const MAP_DEVICES = ["pc", "mb"];
 const REQUEST_DEVICES = [...MAP_DEVICES, "r"];
 const BRIGHTNESS_VALUES = ["dark", "light"];
 const METHOD_VALUES = ["proxy", "redirect"];
+const IMAGE_FILENAME_DIGITS = 5;
 
-const FORCE_REDIRECT_ENABLED = true;
+const REDIRECT_ENABLED = true;
 
 const ALLOWED_PARAMS_SET = new Set(ALLOWED_PARAMS);
 const REQUEST_DEVICE_SET = new Set(REQUEST_DEVICES);
@@ -150,7 +151,7 @@ const getBaseImageUrlFromKV = async () => {
 
 const buildImageUrl = (baseImageUrl, selectedFolder) => {
 	const imageNumber = Math.floor(Math.random() * selectedFolder.count) + 1;
-	const imageFilename = `${String(imageNumber).padStart(5, "0")}.webp`;
+	const imageFilename = `${String(imageNumber).padStart(IMAGE_FILENAME_DIGITS, "0")}.webp`;
 	return `${baseImageUrl}${selectedFolder.device}-${selectedFolder.brightness}/${selectedFolder.theme}/${imageFilename}`;
 };
 
@@ -210,7 +211,7 @@ export const handleRandomImg = async (request) => {
 	// 读取 method 参数，缺省时默认使用 proxy。
 	const method = params.get("m")?.toLowerCase() || "proxy";
 	// 强制开关：若关闭重定向，则无论参数如何都用 proxy
-	const effectiveMethod = FORCE_REDIRECT_ENABLED ? method : "proxy";
+	const effectiveMethod = REDIRECT_ENABLED ? method : "proxy";
 
 	// 校验 method 参数：仅允许 proxy 或 redirect
 	// 判断 method 是否在允许集合内。

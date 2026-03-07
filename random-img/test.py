@@ -25,9 +25,13 @@ def _required_env(name: str) -> str:
 CONFIG_ENV_NAME = "CONFIG"
 
 # 单次 HTTP 请求超时时间（秒）。
-TIMEOUT_SECONDS = 20.0
+TIMEOUT_SECONDS = 30.0
 # 稳定性测试中随机重定向抽样次数。
 RANDOM_RUNS = 30
+# redirect 行为开关：True=期望 m=redirect 返回 302，False=期望回退到 proxy。
+REDIRECT_ENABLED = True
+# 图片文件名数字位数（例如 5 -> 00001.webp）。
+IMAGE_FILENAME_DIGITS = 5
 # 5xx 响应最大重试次数（不含首次请求）。
 MAX_HTTP_5XX_RETRIES = 3
 # 瞬时网络/读取失败时的最大重试次数（不含首次请求）。
@@ -74,37 +78,6 @@ def _required_config_str(config: dict[str, Any], key: str) -> str:
     return value.strip()
 
 
-def _config_bool(config: dict[str, Any], key: str, default: bool) -> bool:
-    raw_value = config.get(key)
-    if raw_value is None:
-        return default
-    if isinstance(raw_value, bool):
-        return raw_value
-    if isinstance(raw_value, (int, float)):
-        return raw_value != 0
-    if isinstance(raw_value, str):
-        return raw_value.strip().lower() in {"1", "true", "yes", "on"}
-    raise RuntimeError(f"Invalid boolean CONFIG field: {key}")
-
-
-def _required_config_int(config: dict[str, Any], key: str) -> int:
-    raw_value = config.get(key)
-    if isinstance(raw_value, bool):
-        raise RuntimeError(f"Invalid integer CONFIG field: {key}")
-    if isinstance(raw_value, int):
-        value = raw_value
-    elif isinstance(raw_value, str) and raw_value.strip():
-        try:
-            value = int(raw_value.strip())
-        except ValueError as exc:
-            raise RuntimeError(f"Invalid integer CONFIG field: {key}") from exc
-    else:
-        raise RuntimeError(f"Missing or invalid CONFIG field: {key}")
-
-    if value <= 0:
-        raise RuntimeError(f"Invalid CONFIG field: {key} must be > 0")
-    return value
-
 def _mask_config_for_log(config_raw: str) -> str:
     """
     对 CONFIG_RAW 进行脱敏，只保留字段名和类型信息，不输出具体值。
@@ -126,8 +99,6 @@ API_BASE_URL = _required_config_str(CONFIG, "API_BASE_URL")
 ASSET_BASE_URL = _normalize_asset_base_url(_required_config_str(CONFIG, "ASSET_BASE_URL"))
 RANDOM_IMG_COUNT_PATH = "/" + _required_config_str(CONFIG, "RANDOM_IMG_COUNT_PATH").strip("/")
 
-IMAGE_FILENAME_DIGITS = _required_config_int(CONFIG, "IMAGE_FILENAME_DIGITS")
-ENABLE_REDIRECT_TESTS = _config_bool(CONFIG, "ENABLE_REDIRECT_TESTS", False)
 HIDDEN_ROUTE_QUERY_FORBIDDEN_MESSAGE_PART = "Routes do not accept query parameters"
 
 SENSITIVE_LOG_TOKENS = sorted(
@@ -418,7 +389,7 @@ class ApiTester:
         print(f"CONFIG env value: {_mask_config_for_log(CONFIG_RAW)}")
         print(f"Testing API base URL: {_mask_url_for_log(self.api_base_url)}")
         print(f"Expect asset base URL: {_mask_url_for_log(self.asset_base_url)} (strict=True)")
-        print(f"Redirect tests enabled: {ENABLE_REDIRECT_TESTS}")
+        print(f"Expect actual redirect behavior: {REDIRECT_ENABLED}")
         started = time.time()
 
         # 1) 隐藏统计路由：仅做边界校验（状态、类型、非负值）。
@@ -611,31 +582,62 @@ class ApiTester:
             expect_allowed_list=True,
         )
 
-        # 3) 大小写兼容
-        if ENABLE_REDIRECT_TESTS:
-            mixed_case_method = self.request("/random-img", query={"m": "ReDiReCt"}, follow_redirects=False)
-            self.assert_true(mixed_case_method.status == 302, "mixed-case method redirect status", f"status={mixed_case_method.status}")
+        # 3) 大小写兼容（始终覆盖 proxy 与 redirect）。
+        mixed_case_proxy = self.request(
+            "/random-img",
+            query={"d": "PC", "b": "LiGhT", "m": "PrOxY"},
+            follow_redirects=True,
+        )
+        self.assert_true(
+            mixed_case_proxy.status in {200, 404, 502},
+            "mixed-case device/brightness proxy status",
+            f"status={mixed_case_proxy.status}",
+        )
 
-            mixed_case_device_brightness = self.request(
-                "/random-img",
-                query={"d": "PC", "b": "LiGhT", "m": "redirect"},
-                follow_redirects=False,
-            )
+        mixed_case_method_redirect = self.request(
+            "/random-img",
+            query={"m": "ReDiReCt"},
+            follow_redirects=False,
+        )
+        if REDIRECT_ENABLED:
             self.assert_true(
-                mixed_case_device_brightness.status in {302, 404},
-                "mixed-case device/brightness status",
-                f"status={mixed_case_device_brightness.status}",
+                mixed_case_method_redirect.status == 302,
+                "mixed-case method redirect status",
+                f"status={mixed_case_method_redirect.status}",
             )
         else:
-            mixed_case_proxy = self.request(
-                "/random-img",
-                query={"d": "PC", "b": "LiGhT", "m": "PrOxY"},
-                follow_redirects=True,
+            self.assert_true(
+                mixed_case_method_redirect.status in {200, 404, 502},
+                "mixed-case method redirect fallback-to-proxy status",
+                f"status={mixed_case_method_redirect.status}",
             )
             self.assert_true(
-                mixed_case_proxy.status in {200, 404, 502},
-                "mixed-case device/brightness proxy status",
-                f"status={mixed_case_proxy.status}",
+                mixed_case_method_redirect.status != 302,
+                "mixed-case method redirect fallback-to-proxy no-302",
+                f"status={mixed_case_method_redirect.status}",
+            )
+
+        mixed_case_device_brightness_redirect = self.request(
+            "/random-img",
+            query={"d": "PC", "b": "LiGhT", "m": "ReDiReCt"},
+            follow_redirects=False,
+        )
+        if REDIRECT_ENABLED:
+            self.assert_true(
+                mixed_case_device_brightness_redirect.status in {302, 404},
+                "mixed-case device/brightness redirect status",
+                f"status={mixed_case_device_brightness_redirect.status}",
+            )
+        else:
+            self.assert_true(
+                mixed_case_device_brightness_redirect.status in {200, 404, 502},
+                "mixed-case device/brightness redirect fallback-to-proxy status",
+                f"status={mixed_case_device_brightness_redirect.status}",
+            )
+            self.assert_true(
+                mixed_case_device_brightness_redirect.status != 302,
+                "mixed-case device/brightness redirect fallback-to-proxy no-302",
+                f"status={mixed_case_device_brightness_redirect.status}",
             )
 
         # 4) 默认请求（proxy）
@@ -662,27 +664,38 @@ class ApiTester:
                 group_key = f"{device}-{brightness}"
                 group_count = int(group_totals.get(group_key, 0))
                 if group_count > 0:
-                    if ENABLE_REDIRECT_TESTS:
-                        group_redirect = self.request(
-                            "/random-img",
-                            query={"d": device, "b": brightness, "m": "redirect"},
-                            follow_redirects=False,
-                        )
+                    group_proxy = self.request(
+                        "/random-img",
+                        query={"d": device, "b": brightness, "m": "proxy"},
+                        follow_redirects=True,
+                    )
+                    self.assert_true(
+                        group_proxy.status == 200,
+                        f"group {group_key} proxy status",
+                        f"status={group_proxy.status}",
+                    )
+
+                    group_redirect = self.request(
+                        "/random-img",
+                        query={"d": device, "b": brightness, "m": "redirect"},
+                        follow_redirects=False,
+                    )
+                    if REDIRECT_ENABLED:
                         self.assert_true(
                             group_redirect.status == 302,
                             f"group {group_key} redirect status",
                             f"status={group_redirect.status}",
                         )
                     else:
-                        group_proxy = self.request(
-                            "/random-img",
-                            query={"d": device, "b": brightness},
-                            follow_redirects=True,
+                        self.assert_true(
+                            group_redirect.status == 200,
+                            f"group {group_key} redirect fallback-to-proxy status",
+                            f"status={group_redirect.status}",
                         )
                         self.assert_true(
-                            group_proxy.status == 200,
-                            f"group {group_key} proxy status",
-                            f"status={group_proxy.status}",
+                            group_redirect.status != 302,
+                            f"group {group_key} redirect fallback-to-proxy no-302",
+                            f"status={group_redirect.status}",
                         )
                 else:
                     self.expect_json_error(
@@ -715,6 +728,40 @@ class ApiTester:
             if result.status != 200:
                 self._assert_error_json_payload(result, result.status, f"valid query #{idx} error payload")
 
+        if REDIRECT_ENABLED:
+            valid_redirect_queries = [
+                {"m": "redirect"},
+                {"d": "pc", "m": "redirect"},
+                {"d": "mb", "m": "redirect"},
+                {"d": "r", "b": "dark", "m": "redirect"},
+            ]
+            for idx, query in enumerate(valid_redirect_queries, start=1):
+                result = self.request("/random-img", query=query, follow_redirects=False)
+                self.assert_true(
+                    result.status in {302, 404},
+                    f"valid redirect query #{idx} status",
+                    f"query={query}, status={result.status}",
+                )
+        else:
+            redirect_as_proxy_queries = [
+                {"m": "redirect"},
+                {"d": "pc", "m": "redirect"},
+                {"d": "mb", "m": "redirect"},
+                {"d": "r", "b": "dark", "m": "redirect"},
+            ]
+            for idx, query in enumerate(redirect_as_proxy_queries, start=1):
+                result = self.request("/random-img", query=query, follow_redirects=False)
+                self.assert_true(
+                    result.status in {200, 404, 502},
+                    f"redirect-disabled query #{idx} fallback status",
+                    f"query={query}, status={result.status}",
+                )
+                self.assert_true(
+                    result.status != 302,
+                    f"redirect-disabled query #{idx} no-302",
+                    f"query={query}, status={result.status}",
+                )
+
         # 7) 多主题参数覆盖（使用统计结果中同组多个可用主题）
         themes_by_group: dict[tuple[str, str], list[str]] = {}
         for row in nonzero_details:
@@ -736,20 +783,31 @@ class ApiTester:
             d, b, themes = multi_theme_group
             t1, t2 = themes[0], themes[1]
 
-            if ENABLE_REDIRECT_TESTS:
-                multi_csv = self.request(
-                    "/random-img",
-                    query={"d": d, "b": b, "t": f"{t1},{t2}", "m": "redirect"},
-                    follow_redirects=False,
-                )
-                self.assert_true(multi_csv.status == 302, "multi-theme csv redirect status", f"status={multi_csv.status}")
+            multi_csv_proxy = self.request(
+                "/random-img",
+                query={"d": d, "b": b, "t": f"{t1},{t2}", "m": "proxy"},
+                follow_redirects=True,
+            )
+            self.assert_true(multi_csv_proxy.status == 200, "multi-theme csv proxy status", f"status={multi_csv_proxy.status}")
+
+            multi_csv_redirect = self.request(
+                "/random-img",
+                query={"d": d, "b": b, "t": f"{t1},{t2}", "m": "redirect"},
+                follow_redirects=False,
+            )
+            if REDIRECT_ENABLED:
+                self.assert_true(multi_csv_redirect.status == 302, "multi-theme csv redirect status", f"status={multi_csv_redirect.status}")
             else:
-                multi_csv = self.request(
-                    "/random-img",
-                    query={"d": d, "b": b, "t": f"{t1},{t2}"},
-                    follow_redirects=True,
+                self.assert_true(
+                    multi_csv_redirect.status == 200,
+                    "multi-theme csv redirect fallback-to-proxy status",
+                    f"status={multi_csv_redirect.status}",
                 )
-                self.assert_true(multi_csv.status == 200, "multi-theme csv proxy status", f"status={multi_csv.status}")
+                self.assert_true(
+                    multi_csv_redirect.status != 302,
+                    "multi-theme csv redirect fallback-to-proxy no-302",
+                    f"status={multi_csv_redirect.status}",
+                )
 
             self.expect_json_error(
                 "/random-img",
@@ -766,11 +824,15 @@ class ApiTester:
             d, b, t = str(row["device"]), str(row["brightness"]), str(row["theme"])
             label_prefix = f"combo {d}-{b}-{t}"
 
-            if ENABLE_REDIRECT_TESTS:
-                rr = self.request("/random-img", query={"d": d, "b": b, "t": t, "m": "redirect"}, follow_redirects=False)
-                self.assert_true(rr.status == 302, f"{label_prefix} redirect status", f"status={rr.status}")
             rp = self.request("/random-img", query={"d": d, "b": b, "t": t, "m": "proxy"}, follow_redirects=True)
             self.assert_true(rp.status == 200, f"{label_prefix} proxy status", f"status={rp.status}")
+
+            rr = self.request("/random-img", query={"d": d, "b": b, "t": t, "m": "redirect"}, follow_redirects=False)
+            if REDIRECT_ENABLED:
+                self.assert_true(rr.status == 302, f"{label_prefix} redirect status", f"status={rr.status}")
+            else:
+                self.assert_true(rr.status == 200, f"{label_prefix} redirect fallback-to-proxy status", f"status={rr.status}")
+                self.assert_true(rr.status != 302, f"{label_prefix} redirect fallback-to-proxy no-302", f"status={rr.status}")
 
         if zero_details:
             row = zero_details[0]
@@ -783,9 +845,18 @@ class ApiTester:
                 f"no images for combination {d}-{b}-{t}",
             )
 
-        # 9) 重定向模式
-        if ENABLE_REDIRECT_TESTS:
-            redirect_any = self.request("/random-img", query={"m": "redirect"}, follow_redirects=False)
+        # 9) 方法模式行为：始终测试 proxy 与 redirect（按开关断言 redirect 语义）。
+        proxy_any = self.request("/random-img", query={"m": "proxy"}, follow_redirects=True)
+        self.assert_true(
+            proxy_any.status in {200, 404, 502},
+            "GET /random-img?m=proxy status",
+            f"status={proxy_any.status}",
+        )
+        if proxy_any.status != 200:
+            self._assert_error_json_payload(proxy_any, proxy_any.status, "GET /random-img?m=proxy error payload")
+
+        redirect_any = self.request("/random-img", query={"m": "redirect"}, follow_redirects=False)
+        if REDIRECT_ENABLED:
             self.assert_true(redirect_any.status == 302, "GET /random-img?m=redirect status")
             location = redirect_any.headers.get("location", "")
             self.assert_true(bool(location), "GET /random-img?m=redirect location present")
@@ -796,31 +867,63 @@ class ApiTester:
                 "GET /random-img?m=redirect location format",
                 location,
             )
-
-            redirect_with_filters = self.request(
-                "/random-img",
-                query={"d": "r", "b": "dark", "m": "redirect"},
-                follow_redirects=False,
+        else:
+            self.assert_true(
+                redirect_any.status in {200, 404, 502},
+                "GET /random-img?m=redirect fallback proxy status",
+                f"status={redirect_any.status}",
             )
+            self.assert_true(
+                redirect_any.status != 302,
+                "GET /random-img?m=redirect fallback no-302",
+                f"status={redirect_any.status}",
+            )
+
+        redirect_with_filters = self.request(
+            "/random-img",
+            query={"d": "r", "b": "dark", "m": "redirect"},
+            follow_redirects=False,
+        )
+        if REDIRECT_ENABLED:
             self.assert_true(
                 redirect_with_filters.status in {302, 404},
                 "GET /random-img?d=r&b=dark&m=redirect status",
                 f"status={redirect_with_filters.status}",
             )
         else:
-            print("[SKIP] 已关闭 redirect 测试，跳过 m=redirect 行为断言")
+            self.assert_true(
+                redirect_with_filters.status in {200, 404, 502},
+                "GET /random-img?d=r&b=dark&m=redirect fallback status",
+                f"status={redirect_with_filters.status}",
+            )
+            self.assert_true(
+                redirect_with_filters.status != 302,
+                "GET /random-img?d=r&b=dark&m=redirect fallback no-302",
+                f"status={redirect_with_filters.status}",
+            )
 
-        # 10) 稳定性抽样
-        if ENABLE_REDIRECT_TESTS:
-            for i in range(self.random_runs):
-                r = self.request("/random-img", query={"m": "redirect"}, follow_redirects=False)
+        # 10) 稳定性抽样：始终测试 proxy，redirect 按开关断言。
+        for i in range(self.random_runs):
+            r = self.request("/random-img", query={"m": "proxy"}, follow_redirects=True)
+            self.assert_true(
+                r.status in {200, 404, 502},
+                f"random stability proxy #{i + 1}",
+                f"status={r.status}",
+            )
+
+        for i in range(self.random_runs):
+            r = self.request("/random-img", query={"m": "redirect"}, follow_redirects=False)
+            if REDIRECT_ENABLED:
                 self.assert_true(r.status == 302, f"random stability redirect #{i + 1}", f"status={r.status}")
-        else:
-            for i in range(self.random_runs):
-                r = self.request("/random-img", query={"m": "proxy"}, follow_redirects=True)
+            else:
                 self.assert_true(
                     r.status in {200, 404, 502},
-                    f"random stability proxy #{i + 1}",
+                    f"random stability redirect-fallback #{i + 1}",
+                    f"status={r.status}",
+                )
+                self.assert_true(
+                    r.status != 302,
+                    f"random stability redirect-fallback no-302 #{i + 1}",
                     f"status={r.status}",
                 )
 
