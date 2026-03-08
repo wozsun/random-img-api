@@ -1,8 +1,8 @@
 import { detailedErrorResponse, jsonSuccessResponse } from "../main/response.js";
+import { validateRefererAccess } from "../main/referer.js";
 import {
-	KV_CACHE_TTL_MS,
 	getKvJsonObjectCached,
-	getKvNormalizedUrlCached,
+	getKvUrlCached,
 } from "../main/kv.js";
 
 const RANDOM_IMG_CONFIG_NAMESPACE = "random-img-config";
@@ -17,16 +17,19 @@ const MAP_DEVICES = ["pc", "mb"];
 const REQUEST_DEVICES = [...MAP_DEVICES, "r"];
 const BRIGHTNESS_VALUES = ["dark", "light"];
 const METHOD_VALUES = ["proxy", "redirect"];
+
 const IMAGE_FILENAME_DIGITS = 5;
 const UPSTREAM_FETCH_MAX_ATTEMPTS = 3;
 const UPSTREAM_FETCH_RETRY_BASE_DELAY_MS = 100;
-
+const REFERER_CHECK_ENABLED = false;
+const ALLOW_EMPTY_REFERER = true;
 const REDIRECT_ENABLED = true;
 
 const ALLOWED_PARAMS_SET = new Set(ALLOWED_PARAMS);
 const REQUEST_DEVICE_SET = new Set(REQUEST_DEVICES);
 const BRIGHTNESS_SET = new Set(BRIGHTNESS_VALUES);
 const METHOD_SET = new Set(METHOD_VALUES);
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 
@@ -82,7 +85,6 @@ const validateAllowedQueryParams = (params, allowedParams) => {
 let validThemeCache = {
 	themes: null,
 	themeSet: null,
-	expiresAt: 0,
 	sourceRef: null,
 };
 
@@ -101,8 +103,7 @@ const buildValidThemes = (folderMap) =>
 	);
 
 const ensureValidThemeCache = (folderMap) => {
-	const now = Date.now();
-	if (validThemeCache.themes && validThemeCache.sourceRef === folderMap && now < validThemeCache.expiresAt) {
+	if (validThemeCache.themes && validThemeCache.sourceRef === folderMap) {
 		return validThemeCache;
 	}
 
@@ -110,7 +111,6 @@ const ensureValidThemeCache = (folderMap) => {
 	validThemeCache = {
 		themes,
 		themeSet: new Set(themes),
-		expiresAt: now + KV_CACHE_TTL_MS,
 		sourceRef: folderMap,
 	};
 
@@ -127,27 +127,31 @@ const getValidThemes = (folderMap) => {
 
 // 读取并校验 FOLDER_MAP 配置。
 const getFolderMapFromKV = async () => {
-	const folderMap = await getKvJsonObjectCached({
+	return getKvJsonObjectCached({
 		namespace: RANDOM_IMG_CONFIG_NAMESPACE,
 		key: FOLDER_MAP_KEY,
 		cacheKey: "random-img::folder-map",
-		ttlMs: KV_CACHE_TTL_MS,
 	});
-
-	if (!folderMap) {
-		return { folderMap: null, errorKey: "FOLDER_MAP_CONFIG_ERROR" };
-	}
-
-	return { folderMap, errorKey: null };
 };
 
 // 读取 BASE_IMAGE_URL 并规范成以 `/` 结尾的可拼接基础地址。
 const getBaseImageUrlFromKV = async () => {
-	return getKvNormalizedUrlCached({
+	return getKvUrlCached({
 		namespace: RANDOM_IMG_CONFIG_NAMESPACE,
 		key: BASE_IMAGE_URL_KEY,
 		cacheKey: "random-img::base-image-url",
-		ttlMs: KV_CACHE_TTL_MS,
+	});
+};
+
+const validateRefererByConfig = async (request) => {
+	if (!REFERER_CHECK_ENABLED) {
+		return { allowed: true, response: null };
+	}
+
+	return validateRefererAccess({
+		namespace: RANDOM_IMG_CONFIG_NAMESPACE,
+		referer: request.headers.get("referer") || "",
+		allowEmptyReferer: ALLOW_EMPTY_REFERER,
 	});
 };
 
@@ -204,6 +208,11 @@ const respondImageByMethod = async (method, imageUrl) => {
 // ===========================
 export const handleRandomImg = async (request) => {
 	// 处理随机图片请求：参数校验 -> 候选组合筛选 -> 加权抽样 -> redirect/proxy 返回。
+	const refererCheckResult = await validateRefererByConfig(request);
+	if (!refererCheckResult.allowed) {
+		return refererCheckResult.response;
+	}
+
 	// 解析请求 URL 以获取路径与查询参数。
 	const url = new URL(request.url);
 	// 提取 URLSearchParams 便于读取与校验参数。
@@ -269,10 +278,10 @@ export const handleRandomImg = async (request) => {
 	const brightnessCandidates = requestedBrightness ? [requestedBrightness] : BRIGHTNESS_VALUES;
 
 	// 读取并校验 FOLDER_MAP 配置。
-	const { folderMap, errorKey: folderMapErrorKey } = await getFolderMapFromKV();
+	const folderMap = await getFolderMapFromKV();
 	// 若配置异常则返回统一配置错误响应。
-	if (folderMapErrorKey) {
-		return detailedErrorResponse(RANDOM_IMG_ERRORS[folderMapErrorKey], FOLDER_MAP_CONFIG_ERROR_DETAILS);
+	if (!folderMap) {
+		return detailedErrorResponse(RANDOM_IMG_ERRORS.FOLDER_MAP_CONFIG_ERROR, FOLDER_MAP_CONFIG_ERROR_DETAILS);
 	}
 
 	// 处理 theme 参数
@@ -402,9 +411,9 @@ const buildRandomImgCountData = (folderMap) => {
 };
 
 export const handleRandomImgCount = async () => {
-	const { folderMap, errorKey: folderMapErrorKey } = await getFolderMapFromKV();
-	if (folderMapErrorKey) {
-		return detailedErrorResponse(RANDOM_IMG_ERRORS[folderMapErrorKey], FOLDER_MAP_CONFIG_ERROR_DETAILS);
+	const folderMap = await getFolderMapFromKV();
+	if (!folderMap) {
+		return detailedErrorResponse(RANDOM_IMG_ERRORS.FOLDER_MAP_CONFIG_ERROR, FOLDER_MAP_CONFIG_ERROR_DETAILS);
 	}
 	return jsonSuccessResponse(buildRandomImgCountData(folderMap));
 };

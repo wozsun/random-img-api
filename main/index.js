@@ -178,7 +178,7 @@ export default {
 			return jsonErrorResponse(GLOBAL_ERRORS.NOT_FOUND);
 		} catch (error) {
 			// 捕获未预期的错误，避免函数崩溃
-			console.error("Unhandled error in edge function:", error);
+			console.error("Unhandled error in edge function:", error instanceof Error ? error.message : "unknown");
 			return jsonErrorResponse(GLOBAL_ERRORS.INTERNAL_ERROR);
 		}
 	},
