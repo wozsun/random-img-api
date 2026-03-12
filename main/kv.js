@@ -30,11 +30,8 @@ const cacheStores = {
 	boolean: new Map(),
 	jsonObject: new Map(),
 	number: new Map(),
-	numberLines: new Map(),
 	text: new Map(),
 	textLines: new Map(),
-	array: new Map(),
-	arrayLines: new Map(),
 	url: new Map(),
 	urlLines: new Map(),
 };
@@ -115,15 +112,12 @@ const toSingleLine = (payload) => {
 	return payload.lines[0];
 };
 
-// 从 KV 拉取原始文本，失败时按上限重试
-const fetchRawTextFromKv = async ({ namespace, key }) => {
+// 从 KV 按指定 type 拉取数据，失败时按上限重试；key 不存在或异常均返回 null
+const fetchFromKv = async ({ namespace, key, type }) => {
 	for (let attempt = 1; attempt <= KV_GET_MAX_ATTEMPTS; attempt++) {
 		try {
-			const raw = await getEdgeKVClient(namespace).get(key, { type: "text" });
-			if (typeof raw !== "string") {
-				return null;
-			}
-			return raw;
+			const value = await getEdgeKVClient(namespace).get(key, { type });
+			return value ?? null;
 		} catch {
 			if (attempt >= KV_GET_MAX_ATTEMPTS) {
 				return null;
@@ -134,6 +128,12 @@ const fetchRawTextFromKv = async ({ namespace, key }) => {
 
 	return null;
 };
+
+// 从 KV 拉取原始文本（type: "text"）
+const fetchRawTextFromKv = ({ namespace, key }) => fetchFromKv({ namespace, key, type: "text" });
+
+// 从 KV 拉取 JSON 对象（type: "json"）
+const fetchJsonFromKv = ({ namespace, key }) => fetchFromKv({ namespace, key, type: "json" });
 
 // 带缓存获取归一化后的源数据载荷
 const getNormalizedSourceCached = async ({
@@ -170,22 +170,6 @@ const parseBoolean = (line) => {
 	return null;
 };
 
-// 解析严格 JSON 对象：仅接受顶层对象
-const parseJsonObject = (text) => {
-	if (!text) {
-		return null;
-	}
-	try {
-		const parsed = JSON.parse(text);
-		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-			return null;
-		}
-		return parsed;
-	} catch {
-		return null;
-	}
-};
-
 // 解析单行有限数字
 const parseNumber = (line) => {
 	if (!line) {
@@ -195,60 +179,11 @@ const parseNumber = (line) => {
 	return Number.isFinite(value) ? value : null;
 };
 
-// 解析多行有限数字
-const parseNumberLines = (lines) => {
-	if (!lines) {
-		return null;
-	}
-	const numbers = [];
-	for (const line of lines) {
-		const value = Number(line);
-		if (!Number.isFinite(value)) {
-			return null;
-		}
-		numbers.push(value);
-	}
-	return numbers.length > 0 ? numbers : null;
-};
-
 // 解析单行文本
 const parseText = (line) => line || null;
 
 // 解析多行文本
 const parseTextLines = (lines) => (lines && lines.length > 0 ? lines : null);
-
-// 将单行文本解析为数组（必须为合法 JSON 数组）
-const parseArray = (line) => {
-	const text = parseText(line);
-	if (!text) {
-		return null;
-	}
-	try {
-		const parsed = JSON.parse(text);
-		if (!Array.isArray(parsed) || parsed.length === 0) {
-			return null;
-		}
-		return parsed;
-	} catch {
-		return null;
-	}
-};
-
-// 将每行文本解析为二维数组（每行必须为合法 JSON 数组）
-const parseArrayLines = (lines) => {
-	if (!lines) {
-		return null;
-	}
-	const rows = [];
-	for (const line of lines) {
-		const row = parseArray(line);
-		if (!row) {
-			return null;
-		}
-		rows.push(row);
-	}
-	return rows.length > 0 ? rows : null;
-};
 
 // 规范化 URL：确保以 '/' 结尾
 const normalizeUrlWithTrailingSlash = (url) => (url.endsWith("/") ? url : `${url}/`);
@@ -286,14 +221,12 @@ const parseUrlLines = (lines) => {
 // Getter 工厂
 // ===========================
 
-// source 片段类型：决定 parser 拿到的是“单行 / 多行数组 / 整段文本”。
+// source 片段类型：决定 parser 拿到的是"单行"还是"多行数组"。
 const SOURCE_TYPE = {
 	// 严格单行：仅当归一化后恰好一行时才返回值。
 	SINGLE_LINE: "single-line",
 	// 按行数组：返回所有非空行组成的 string[]。
 	LINES: "lines",
-	// 整段文本：返回用 \n 连接后的完整文本。
-	MULTI_LINE_TEXT: "multi-line-text",
 };
 
 // 根据 sourceType 从归一化载荷中提取对应片段
@@ -306,9 +239,6 @@ const pickSource = (payload, sourceType) => {
 	}
 	if (sourceType === SOURCE_TYPE.LINES) {
 		return payload.lines;
-	}
-	if (sourceType === SOURCE_TYPE.MULTI_LINE_TEXT) {
-		return payload.text;
 	}
 	return null;
 };
@@ -334,19 +264,23 @@ const createTypedKvGetter = ({ cacheStore, sourceType, parser }) => {
 // 对外类型接口
 // ===========================
 
-// 1) 严格布尔值
+// 1) 严格布尔值（单行 true/false，大小写不敏感）
 export const getKvBooleanCached = createTypedKvGetter({
 	cacheStore: cacheStores.boolean,
 	sourceType: SOURCE_TYPE.SINGLE_LINE,
 	parser: parseBoolean,
 });
 
-// 2) 严格 JSON 对象
-export const getKvJsonObjectCached = createTypedKvGetter({
-	cacheStore: cacheStores.jsonObject,
-	sourceType: SOURCE_TYPE.MULTI_LINE_TEXT,
-	parser: parseJsonObject,
-});
+// 2) JSON 对象（通过 type:"json" 直接获取，不做本地校验与类型转换）
+export const getKvJsonObjectCached = async ({ namespace, key, cacheKey = "", ttlMs = KV_CACHE_TTL_MS }) => {
+	const id = buildCacheKey(namespace, key, cacheKey);
+	return readCachedValue({
+		cacheStore: cacheStores.jsonObject,
+		id,
+		ttlMs,
+		loader: () => fetchJsonFromKv({ namespace, key }),
+	});
+};
 
 // 3) 单行数字
 export const getKvNumberCached = createTypedKvGetter({
@@ -355,49 +289,28 @@ export const getKvNumberCached = createTypedKvGetter({
 	parser: parseNumber,
 });
 
-// 4) 多行数字
-export const getKvNumberLinesCached = createTypedKvGetter({
-	cacheStore: cacheStores.numberLines,
-	sourceType: SOURCE_TYPE.LINES,
-	parser: parseNumberLines,
-});
-
-// 5) 单行文本
+// 4) 单行文本
 export const getKvTextCached = createTypedKvGetter({
 	cacheStore: cacheStores.text,
 	sourceType: SOURCE_TYPE.SINGLE_LINE,
 	parser: parseText,
 });
 
-// 6) 多行文本
+// 5) 多行文本
 export const getKvTextLinesCached = createTypedKvGetter({
 	cacheStore: cacheStores.textLines,
 	sourceType: SOURCE_TYPE.LINES,
 	parser: parseTextLines,
 });
 
-// 7) 单行数组（合法 JSON 数组）
-export const getKvArrayCached = createTypedKvGetter({
-	cacheStore: cacheStores.array,
-	sourceType: SOURCE_TYPE.SINGLE_LINE,
-	parser: parseArray,
-});
-
-// 8) 多行数组（每行均为合法 JSON 数组）
-export const getKvArrayLinesCached = createTypedKvGetter({
-	cacheStore: cacheStores.arrayLines,
-	sourceType: SOURCE_TYPE.LINES,
-	parser: parseArrayLines,
-});
-
-// 9) 单行 URL
+// 6) 单行 URL
 export const getKvUrlCached = createTypedKvGetter({
 	cacheStore: cacheStores.url,
 	sourceType: SOURCE_TYPE.SINGLE_LINE,
 	parser: parseUrl,
 });
 
-// 10) 多行 URL
+// 7) 多行 URL
 export const getKvUrlLinesCached = createTypedKvGetter({
 	cacheStore: cacheStores.urlLines,
 	sourceType: SOURCE_TYPE.LINES,
