@@ -1,6 +1,6 @@
 # 主模块说明
 
-该目录负责 API 的基础路由注册与通用行为处理，提供以下核心功能：
+该目录负责 API 的基础路由注册与通用行为处理，核心能力包括：
 
 - 统一入口（`index.js`）
 - 路由分发
@@ -11,11 +11,15 @@
 
 ## ESA KV 存储配置
 
-命名空间：`hidden-routes`
+如果不使用隐藏路径功能，则无需配置此项 KV 存储。
 
-必需键：
+命名空间：`hidden-routes`。
 
-- `HIDDEN_API_PATH` 隐藏路径（字符串），示例：`/hidden-api`
+可选键：
+
+`HIDDEN_API_PATH`
+
+隐藏路径（字符串），示例：`/hidden-api`
 
 ## 入口行为
 
@@ -24,16 +28,16 @@
 1. 从请求 URL 提取 `pathname`
 2. 先在普通 `ROUTES` 中查找处理器
 3. 普通路由未命中时，再尝试隐藏路径动态路由
-4. 全部未命中返回 `404 API Not Found`
+4. 全部未命中时返回 `404 API Not Found`
 5. 发生未捕获异常时返回 `500 Internal Server Error`
 
 ## 路径扩展
 
-`index.js` 在 `ROUTES` 中维护普通路由入口，在 `HIDDEN_PATH_KEYS` 中维护隐藏路由 KV 键，具体路径从 `hidden-routes` 命名空间动态读取。
+`index.js` 在 `ROUTES` 中维护普通路由入口，在 `HIDDEN_PATH_KEYS` 中维护隐藏路由 KV 键；具体路径从 `hidden-routes` 命名空间动态读取。
 
-所有隐藏路径统一不接受任何查询参数；若携带 query string，将直接返回 `403`。
+所有隐藏路径均不接受查询参数；若携带 query string，将直接返回 `403`。
 
-未来新增普通路由时，在 `index.js` 中做两件事：
+未来新增普通路由时，在 `index.js` 中需要完成两件事：
 
 - 新增该模块的静态导入
 - 在 `ROUTES` 中新增一条入口（值为模块导出对象）
@@ -63,7 +67,7 @@
 
 ## KV 工具
 
-`kv.js` 封装了对 EdgeKV 的带缓存读取，所有 Getter 均采用"Isolate 内 Map 缓存 + 回源重试"机制，key 不存在或读取失败时统一返回 `null`。
+`kv.js` 封装了对 EdgeKV 的带缓存读取。所有 Getter 均采用“Isolate 内 Map 缓存 + 回源重试”机制，key 不存在或读取失败时统一返回 `null`。
 
 **缓存行为：**
 

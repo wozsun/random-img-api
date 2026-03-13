@@ -2,7 +2,7 @@
 
 ## 接口使用
 
-随机图片主接口：`GET /random-img`
+随机图片主接口：`GET /random-img`。
 
 ### 可选查询参数
 
@@ -34,7 +34,15 @@
 - `m=redirect`：返回 `302`，`Location` 指向目标图片 URL
 
 > ⚠️ 隐私提示：`m=redirect`（302）模式不会隐藏上游图片源地址，客户端可直接看到图片仓库/分发源 URL。若需要避免泄露源地址，请使用 `m=proxy` （默认）模式。
-> 可选：修改 `function.js` 中的 `REDIRECT_ENABLED` 配置以启用或禁用 `redirect` 模式。
+> 可选：可通过修改 `function.js` 中的 `REDIRECT_ENABLED` 配置，启用或禁用 `redirect` 模式。
+
+### 计数接口
+
+`GET /your-random-img-count-path`
+
+该接口使用隐藏路径配置，可实现自定义路径访问，例如 `/img-count`。
+
+该接口返回 JSON 格式的图片数量统计信息。
 
 ## 部署配置
 
@@ -42,7 +50,7 @@
 
 以下内容必须正确配置，否则相关接口将无法正常工作。
 
-命名空间：`random-img-config`
+命名空间：`random-img-config`。
 
 必需键：
 
