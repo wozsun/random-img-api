@@ -5,7 +5,7 @@ import { detailedErrorResponse, jsonErrorResponse, jsonSuccessResponse } from ".
 // ===========================
 // 可配置参数（优先编辑此区域）
 // ===========================
-const PATH_CONFIG_NAMESPACE = "path-config";
+const HIDDEN_ROUTES_NAMESPACE = "hidden-routes";
 // 隐藏路由入口注册：新增隐藏路由时仅需在此追加 KV key 字符串。
 const HIDDEN_PATH_KEYS = ["RANDOM_IMG_COUNT_PATH"];
 
@@ -119,9 +119,9 @@ const resolveHiddenPathRoute = async (url, request) => {
 
 	for (const pathKey of HIDDEN_PATH_KEYS) {
 		const dynamicPath = await getKvTextCached({
-			namespace: PATH_CONFIG_NAMESPACE,
+			namespace: HIDDEN_ROUTES_NAMESPACE,
 			key: pathKey,
-			cacheKey: `path-config::${pathKey}`,
+			cacheKey: `hidden-routes::${pathKey}`,
 		});
 
 		if (dynamicPath && pathname === dynamicPath) {

@@ -19,6 +19,12 @@
 
 ## 部署指南
 
+1. Fork 本仓库
+2. 配置 ESA 环境（即 EdgeKV 存储），详见各API模块 README
+3. 将代码部署到 ESA「函数与Pages」
+4. 配置域名解析
+5. 验证接口是否正常工作
+
 ## 开源协议
 
 本项目使用 **GNU AGPLv3**，详见 [LICENSE](./LICENSE)。
