@@ -214,9 +214,17 @@ export const handleRandomImg = async (request) => {
 	}
 
 	// 解析请求 URL 以获取路径与查询参数。
-	const url = new URL(request.url);
-	// 提取 URLSearchParams 便于读取与校验参数。
-	const params = url.searchParams;
+	let params;
+	try {
+		params = new URL(request.url).searchParams;
+	} catch {
+		return detailedErrorResponse({
+			status: 400,
+			message: "Bad Request: Request URL is malformed or cannot be parsed",
+		}, {
+			hint: "Ensure the request URL is valid and properly encoded",
+		});
+	}
 
 	// 第一步：优先校验链接参数合法性，再做后续处理
 	// 执行参数白名单校验，返回值为 null 或错误响应对象。
@@ -383,11 +391,19 @@ const buildRandomImgCountData = (folderMap) => {
 	const themeDetails = {};
 	let totalImages = 0;
 	for (const device of Object.keys(folderMap).sort()) {
-		for (const brightness of Object.keys(folderMap[device]).sort()) {
+		const deviceEntry = folderMap[device];
+		if (!deviceEntry || typeof deviceEntry !== "object") {
+			continue;
+		}
+		for (const brightness of Object.keys(deviceEntry).sort()) {
+			const brightnessEntry = deviceEntry[brightness];
+			if (!brightnessEntry || typeof brightnessEntry !== "object") {
+				continue;
+			}
 			const groupKey = `${device}-${brightness}`;
 			let groupTotal = 0;
-			for (const theme of Object.keys(folderMap[device][brightness]).sort()) {
-				const count = Number(folderMap[device][brightness][theme] ?? 0);
+			for (const theme of Object.keys(brightnessEntry).sort()) {
+				const count = Number(brightnessEntry[theme] ?? 0);
 				groupTotal += count;
 				totalImages += count;
 				if (!themeDetails[theme]) {

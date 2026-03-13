@@ -20,10 +20,10 @@ export const detailedErrorResponse = (error, details = undefined, spaces = 2) =>
 };
 
 // 基于错误定义返回无 details 的基础错误 JSON 响应。
-export const jsonErrorResponse = (error, spaces = 4) => detailedErrorResponse(error, undefined, spaces);
+export const jsonErrorResponse = (error, spaces = 2) => detailedErrorResponse(error, undefined, spaces);
 
 // 将任意成功数据封装为 JSON 响应并统一设置 Content-Type 与缩进。
-export const jsonSuccessResponse = (data, status = 200, spaces = 4) =>
+export const jsonSuccessResponse = (data, status = 200, spaces = 2) =>
 	new Response(JSON.stringify(data, null, spaces), {
 		status,
 		headers: { "Content-Type": "application/json; charset=utf-8" },

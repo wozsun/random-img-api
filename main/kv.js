@@ -2,10 +2,10 @@
 // KV 常量
 // ===========================
 
-const KV_CACHE_TTL_MS = 30 * 1000;
+const KV_CACHE_TTL_MS = 60 * 1000;
 const KV_NEGATIVE_CACHE_TTL_MS = 3 * 1000;
 const KV_GET_MAX_ATTEMPTS = 5;
-const KV_RETRY_BASE_DELAY_MS = 50;
+const KV_RETRY_BASE_DELAY_MS = 60;
 
 // ===========================
 // KV 客户端
