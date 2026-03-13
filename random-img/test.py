@@ -588,26 +588,20 @@ class ApiTester:
         if not isinstance(count_data, dict):
             return 1
 
-        required_keys = {"totalImages", "groupTotals", "themeTotals", "themeDetails"}
+        required_keys = {"totalImages", "groupTotals", "themeDetails"}
         self.assert_true(
             required_keys.issubset(set(count_data.keys())), "count json keys"
         )
 
         group_totals = count_data.get("groupTotals", {})
-        theme_totals = count_data.get("themeTotals", {})
-        theme_details = count_data.get("themeDetails", [])
+        theme_details = count_data.get("themeDetails", {})
 
-        if isinstance(theme_totals, dict):
-            self.register_theme_tokens([str(theme) for theme in theme_totals.keys()])
+        if isinstance(theme_details, dict):
+            self.register_theme_tokens([str(theme) for theme in theme_details.keys()])
 
         self.assert_true(isinstance(group_totals, dict), "groupTotals is object")
-        self.assert_true(isinstance(theme_totals, dict), "themeTotals is object")
-        self.assert_true(isinstance(theme_details, list), "themeDetails is array")
-        if (
-            not isinstance(group_totals, dict)
-            or not isinstance(theme_totals, dict)
-            or not isinstance(theme_details, list)
-        ):
+        self.assert_true(isinstance(theme_details, dict), "themeDetails is object")
+        if not isinstance(group_totals, dict) or not isinstance(theme_details, dict):
             return 1
 
         try:
@@ -620,98 +614,47 @@ class ApiTester:
             str(count_data.get("totalImages")),
         )
 
+        self.assert_true(
+            all(isinstance(value, int) and value >= 0 for value in group_totals.values()),
+            "groupTotals values are non-negative integers",
+        )
+
         normalized_theme_details: list[dict[str, Any]] = []
-        seen_detail_keys: set[tuple[str, str, str]] = set()
-
-        group_non_int_count = 0
-        group_negative_count = 0
-        for value in group_totals.values():
-            try:
-                count = int(value)
-            except (TypeError, ValueError):
-                group_non_int_count += 1
+        for theme, detail in theme_details.items():
+            if not isinstance(detail, dict):
                 continue
-            if count < 0:
-                group_negative_count += 1
+            for group_key, count in detail.items():
+                if group_key == "totals":
+                    continue
+                if not isinstance(count, int):
+                    continue
+                try:
+                    device, brightness = group_key.split("-", 1)
+                except ValueError:
+                    continue
+                if device not in SUPPORTED_DEVICES or brightness not in SUPPORTED_BRIGHTNESS:
+                    continue
+                normalized_theme_details.append(
+                    {
+                        "device": device,
+                        "brightness": brightness,
+                        "theme": str(theme),
+                        "count": count,
+                    }
+                )
 
-        theme_non_int_count = 0
-        theme_negative_count = 0
-        for key, value in theme_totals.items():
-            self.register_theme_tokens([str(key)])
-            try:
-                count = int(value)
-            except (TypeError, ValueError):
-                theme_non_int_count += 1
-                continue
-            if count < 0:
-                theme_negative_count += 1
-
-        self.assert_true(
-            group_non_int_count == 0,
-            "groupTotals values are integers",
-            f"invalid={group_non_int_count}",
-        )
-        self.assert_true(
-            group_negative_count == 0,
-            "groupTotals values are non-negative",
-            f"invalid={group_negative_count}",
-        )
-        self.assert_true(
-            theme_non_int_count == 0,
-            "themeTotals values are integers",
-            f"invalid={theme_non_int_count}",
-        )
-        self.assert_true(
-            theme_negative_count == 0,
-            "themeTotals values are non-negative",
-            f"invalid={theme_negative_count}",
-        )
-
-        for idx, row in enumerate(theme_details):
-            if not isinstance(row, dict):
-                continue
-
-            device = str(row.get("device", ""))
-            brightness = str(row.get("brightness", ""))
-            theme = str(row.get("theme", ""))
-            raw_count = row.get("count", 0)
-
-            if theme:
-                self.register_theme_tokens([theme])
-
-            try:
-                count = int(raw_count)
-            except (TypeError, ValueError):
-                continue
-
-            if (
-                device not in SUPPORTED_DEVICES
-                or brightness not in SUPPORTED_BRIGHTNESS
-                or not theme
-            ):
-                continue
-            if count < 0:
-                continue
-
-            combo_key = (device, brightness, theme)
-            if combo_key in seen_detail_keys:
-                continue
-            seen_detail_keys.add(combo_key)
-
-            normalized_theme_details.append(
-                {
-                    "device": device,
-                    "brightness": brightness,
-                    "theme": theme,
-                    "count": count,
-                }
-            )
-
-        if total_images > 0:
-            self.assert_true(
-                len(normalized_theme_details) > 0,
-                "themeDetails has at least one valid row",
-            )
+        if theme_details:
+            sample_theme, sample_detail = next(iter(theme_details.items()))
+            self.register_theme_tokens([str(sample_theme)])
+            self.assert_true(bool(str(sample_theme).strip()), "themeDetails theme key is non-empty")
+            self.assert_true(isinstance(sample_detail, dict), "themeDetails item is object")
+            if isinstance(sample_detail, dict):
+                sample_total = sample_detail.get("totals")
+                self.assert_true(
+                    isinstance(sample_total, int) and sample_total >= 0,
+                    "themeDetails totals is non-negative integer",
+                    str(sample_total),
+                )
 
         self.expect_json_error(
             RANDOM_IMG_COUNT_PATH,

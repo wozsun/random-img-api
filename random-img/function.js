@@ -380,8 +380,7 @@ export const handleRandomImg = async (request) => {
 
 const buildRandomImgCountData = (folderMap) => {
 	const groupTotals = {};
-	const themeTotals = {};
-	const themeDetails = [];
+	const themeDetails = {};
 	let totalImages = 0;
 	for (const device of Object.keys(folderMap).sort()) {
 		for (const brightness of Object.keys(folderMap[device]).sort()) {
@@ -391,21 +390,18 @@ const buildRandomImgCountData = (folderMap) => {
 				const count = Number(folderMap[device][brightness][theme] ?? 0);
 				groupTotal += count;
 				totalImages += count;
-				themeTotals[theme] = (themeTotals[theme] ?? 0) + count;
-				themeDetails.push({ theme, device, brightness, count });
+				if (!themeDetails[theme]) {
+					themeDetails[theme] = { totals: 0 };
+				}
+				themeDetails[theme].totals += count;
+				themeDetails[theme][groupKey] = count;
 			}
 			groupTotals[groupKey] = groupTotal;
 		}
 	}
-	themeDetails.sort((a, b) =>
-		a.theme.localeCompare(b.theme) ||
-		a.device.localeCompare(b.device) ||
-		a.brightness.localeCompare(b.brightness)
-	);
 	return {
 		totalImages,
 		groupTotals,
-		themeTotals,
 		themeDetails,
 	};
 };
