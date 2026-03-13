@@ -391,9 +391,9 @@ const buildRandomImgCountData = (folderMap) => {
 				groupTotal += count;
 				totalImages += count;
 				if (!themeDetails[theme]) {
-					themeDetails[theme] = { totals: 0 };
+					themeDetails[theme] = { total: 0 };
 				}
-				themeDetails[theme].totals += count;
+				themeDetails[theme].total += count;
 				themeDetails[theme][groupKey] = count;
 			}
 			groupTotals[groupKey] = groupTotal;

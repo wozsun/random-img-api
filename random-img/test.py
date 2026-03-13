@@ -624,7 +624,7 @@ class ApiTester:
             if not isinstance(detail, dict):
                 continue
             for group_key, count in detail.items():
-                if group_key == "totals":
+                if group_key == "total":
                     continue
                 if not isinstance(count, int):
                     continue
@@ -649,10 +649,10 @@ class ApiTester:
             self.assert_true(bool(str(sample_theme).strip()), "themeDetails theme key is non-empty")
             self.assert_true(isinstance(sample_detail, dict), "themeDetails item is object")
             if isinstance(sample_detail, dict):
-                sample_total = sample_detail.get("totals")
+                sample_total = sample_detail.get("total")
                 self.assert_true(
                     isinstance(sample_total, int) and sample_total >= 0,
-                    "themeDetails totals is non-negative integer",
+                    "themeDetails total is non-negative integer",
                     str(sample_total),
                 )
 
