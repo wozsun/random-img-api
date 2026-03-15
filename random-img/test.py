@@ -33,7 +33,7 @@ RANDOM_RUNS = 10
 # redirect 行为开关：True=期望 m=redirect 返回 302，False=期望回退到 proxy。
 REDIRECT_ENABLED = True
 # 图片文件名数字位数（例如 5 -> 00001.webp）。
-IMAGE_FILENAME_DIGITS = 5
+IMAGE_FILENAME_DIGITS = 6
 # 5xx 响应最大重试次数（不含首次请求）。
 MAX_HTTP_5XX_RETRIES = 3
 # 瞬时网络/读取失败时的最大重试次数（不含首次请求）。
