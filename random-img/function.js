@@ -24,6 +24,7 @@ const UPSTREAM_FETCH_RETRY_BASE_DELAY_MS = 100;
 const REFERER_CHECK_ENABLED = false;
 const ALLOW_EMPTY_REFERER = true;
 const REDIRECT_ENABLED = true;
+const PROXY_RESPONSE_HEADER_NAMES = ["x-site-cache-status", "x-swift-savetime"];
 
 const ALLOWED_PARAMS_SET = new Set(ALLOWED_PARAMS);
 const REQUEST_DEVICE_SET = new Set(REQUEST_DEVICES);
@@ -163,6 +164,21 @@ const buildImageUrl = (baseImageUrl, selectedFolder) => {
 	return `${baseImageUrl}${selectedFolder.device}-${selectedFolder.brightness}/${selectedFolder.theme}/${imageFilename}`;
 };
 
+const buildProxyResponseHeaders = (upstreamResponse) => {
+	const responseHeaders = {
+		"Content-Type": "image/webp",
+	};
+
+	for (const headerName of PROXY_RESPONSE_HEADER_NAMES) {
+		const headerValue = upstreamResponse.headers.get(headerName);
+		if (headerValue) {
+			responseHeaders[headerName] = headerValue;
+		}
+	}
+
+	return responseHeaders;
+};
+
 const respondImageByMethod = async (method, imageUrl) => {
 	if (method === "redirect") {
 		try {
@@ -190,11 +206,11 @@ const respondImageByMethod = async (method, imageUrl) => {
 				});
 			}
 
+			const responseHeaders = buildProxyResponseHeaders(upstreamResponse);
+
 			return new Response(upstreamResponse.body, {
 				status: upstreamResponse.status,
-				headers: {
-					"Content-Type": "image/webp",
-				},
+				headers: responseHeaders,
 			});
 		} catch {
 			if (attempt >= UPSTREAM_FETCH_MAX_ATTEMPTS) {
