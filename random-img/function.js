@@ -18,7 +18,7 @@ const REQUEST_DEVICES = [...MAP_DEVICES, "r"];
 const BRIGHTNESS_VALUES = ["dark", "light"];
 const METHOD_VALUES = ["proxy", "redirect"];
 
-const IMAGE_FILENAME_DIGITS = 5;
+const IMAGE_FILENAME_DIGITS = 6;
 const UPSTREAM_FETCH_MAX_ATTEMPTS = 3;
 const UPSTREAM_FETCH_RETRY_BASE_DELAY_MS = 100;
 const REFERER_CHECK_ENABLED = false;
