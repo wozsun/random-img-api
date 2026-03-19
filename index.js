@@ -1,5 +1,5 @@
 import { getKvJsonObjectCached, getKvUrlCached } from "./utils/kv.js";
-import { detailedErrorResponse, jsonErrorResponse } from "./utils/response.js";
+import { detailedErrorResponse } from "./utils/response.js";
 
 const RANDOM_IMG_CONFIG_NAMESPACE = "random-img-config";
 const FOLDER_MAP_KEY = "FOLDER_MAP";
@@ -50,9 +50,11 @@ let validThemeCache = {
 	sourceRef: null,
 };
 
+// 异步等待指定毫秒数
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const invalidFieldError = (error, field, received, allowed = undefined) => {
+// 构造字段校验失败的错误响应，包含字段名、实际值及可选的允许列表
+const fieldErrorResponse = (error, field, received, allowed = undefined) => {
 	const details = { field, received };
 	if (allowed) {
 		details.allowed = allowed;
@@ -60,6 +62,7 @@ const invalidFieldError = (error, field, received, allowed = undefined) => {
 	return detailedErrorResponse(error, details);
 };
 
+// 校验请求的查询参数是否均在允许列表内
 const validateAllowedQueryParams = (params) => {
 	for (const key of params.keys()) {
 		if (!ALLOWED_PARAMS_SET.has(key)) {
@@ -72,6 +75,7 @@ const validateAllowedQueryParams = (params) => {
 	return null;
 };
 
+// 从 folderMap 中提取所有有效主题名列表
 const buildValidThemes = (folderMap) =>
 	Array.from(
 		new Set(
@@ -83,6 +87,7 @@ const buildValidThemes = (folderMap) =>
 		)
 	);
 
+// 确保 validThemeCache 与当前 folderMap 同步，必要时重建
 const ensureValidThemeCache = (folderMap) => {
 	if (validThemeCache.themes && validThemeCache.sourceRef === folderMap) {
 		return validThemeCache;
@@ -98,12 +103,14 @@ const ensureValidThemeCache = (folderMap) => {
 	return validThemeCache;
 };
 
+// 根据 baseImageUrl 和所选文件夹信息构造随机图片 URL
 const buildImageUrl = (baseImageUrl, selectedFolder) => {
 	const imageNumber = Math.floor(Math.random() * selectedFolder.count) + 1;
 	const imageFilename = `${String(imageNumber).padStart(IMAGE_FILENAME_DIGITS, "0")}.webp`;
 	return `${baseImageUrl}${selectedFolder.device}-${selectedFolder.brightness}/${selectedFolder.theme}/${imageFilename}`;
 };
 
+// 按照指定方式（proxy/redirect）响应图片请求
 const respondImageByMethod = async (method, imageUrl) => {
 	if (method === "redirect") {
 		try {
@@ -147,6 +154,7 @@ const respondImageByMethod = async (method, imageUrl) => {
 	}
 };
 
+// 处理 /random-img 路由的核心逻辑
 const handleRandomImg = async (request, env) => {
 	let params;
 	try {
@@ -167,13 +175,13 @@ const handleRandomImg = async (request, env) => {
 
 	const method = params.get("m")?.toLowerCase() || "proxy";
 	if (!METHOD_SET.has(method)) {
-		return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_METHOD, "m", method, METHOD_VALUES);
+		return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_METHOD, "m", method, METHOD_VALUES);
 	}
 	const effectiveMethod = REDIRECT_ENABLED ? method : "proxy";
 
 	const requestedDevice = params.get("d")?.toLowerCase() || null;
 	if (requestedDevice && !REQUEST_DEVICE_SET.has(requestedDevice)) {
-		return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_DEVICE, "d", requestedDevice, REQUEST_DEVICES);
+		return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_DEVICE, "d", requestedDevice, REQUEST_DEVICES);
 	}
 
 	let autoDevice = "r";
@@ -187,7 +195,7 @@ const handleRandomImg = async (request, env) => {
 
 	const requestedBrightness = params.get("b")?.toLowerCase() || null;
 	if (requestedBrightness && !BRIGHTNESS_SET.has(requestedBrightness)) {
-		return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_BRIGHTNESS, "b", requestedBrightness, BRIGHTNESS_VALUES);
+		return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_BRIGHTNESS, "b", requestedBrightness, BRIGHTNESS_VALUES);
 	}
 
 	const themeParams = Array.from(new Set(params
@@ -214,7 +222,7 @@ const handleRandomImg = async (request, env) => {
 		const themeCache = ensureValidThemeCache(folderMap);
 		const invalidTheme = themeParams.find((candidateTheme) => !themeCache.themeSet.has(candidateTheme));
 		if (invalidTheme) {
-			return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_THEME, "t", invalidTheme);
+			return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_THEME, "t", invalidTheme);
 		}
 		themeCandidates = themeParams;
 	} else {
@@ -296,10 +304,10 @@ export default {
 				return await handleRandomImg(request, env);
 			}
 
-			return jsonErrorResponse({ status: 404, message: "API Not Found" });
+			return detailedErrorResponse({ status: 404, message: "API Not Found" });
 		} catch (error) {
 			console.error("Unhandled error in edge function:", error instanceof Error ? error.message : "unknown");
-			return jsonErrorResponse({ status: 500, message: "Internal Server Error" });
+			return detailedErrorResponse({ status: 500, message: "Internal Server Error" });
 		}
 	},
 };

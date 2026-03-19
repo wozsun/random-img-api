@@ -1,3 +1,4 @@
+// 构造包含可选详情字段的 JSON 错误响应
 export const detailedErrorResponse = (error, details = undefined, spaces = 2) => {
 	const payload = {
 		status: error.status,
@@ -13,5 +14,3 @@ export const detailedErrorResponse = (error, details = undefined, spaces = 2) =>
 		headers: { "Content-Type": "application/json; charset=utf-8" },
 	});
 };
-
-export const jsonErrorResponse = (error, spaces = 2) => detailedErrorResponse(error, undefined, spaces);

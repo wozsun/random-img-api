@@ -2,21 +2,18 @@
 
 ## 简介
 
-本项目是基于 Serverless 构建的随机图片 API。目前兼容Aliyun ESA 和 Cloudflare Workers 两大边缘计算平台。
+本项目是基于 Serverless 构建的随机图片 API。目前兼容 Cloudflare Workers 和 Aliyun ESA。
 
 ## 特性
 
-- 边缘函数运行，低延迟、免运维
-- 使用 KV 存储管理配置
-- 单一接口，结构简单，便于维护
+- 使用平台边缘函数运行，无需服务器
+- 使用 KV 存储管理配置，可实现动态更新图片索引和基地址，无需重新部署
+- 支持设备类型、明暗类型、主题等多维度随机选择
+- 可选直接代理图片内容或返回重定向 URL
 
 ## 部署指南
 
-1. Fork 本仓库
-2. 配置 KV 存储环境
-3. 将代码部署到 Serverless 平台
-4. 配置域名解析
-5. 验证接口是否正常工作
+详见 Wiki
 
 ## 接口使用
 
@@ -51,8 +48,7 @@
 - `m=proxy`：边缘函数回源拉图并透传内容
 - `m=redirect`：返回 `302`，`Location` 指向目标图片 URL
 
-> ⚠️ 隐私提示：`m=redirect`（302）模式不会隐藏上游图片源地址，客户端可直接看到图片仓库/分发源 URL。若需要避免泄露源地址，请使用 `m=proxy` （默认）模式。
-> 可选：可通过修改仓库根目录 `index.js` 中的 `REDIRECT_ENABLED` 配置，启用或禁用 `redirect` 模式。
+> ⚠️ 隐私提示：`m=redirect`（302）模式不会隐藏上游图片源地址，客户端可直接看到图片仓库/分发源 URL。可通过修改仓库根目录 `index.js` 中的 `REDIRECT_ENABLED` 配置，启用或禁用 `redirect` 模式。当`REDIRECT_ENABLED = false`时，所有请求将强制使用 `proxy` 模式。
 
 ## 配置说明
 
