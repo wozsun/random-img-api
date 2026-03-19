@@ -2,19 +2,19 @@
 
 ## 简介
 
-本项目是一个基于阿里云 ESA「函数与 Pages」能力构建的随机图片 API。
+本项目是基于 Serverless 构建的随机图片 API。目前兼容Aliyun ESA 和 Cloudflare Workers 两大边缘计算平台。
 
 ## 特性
 
 - 边缘函数运行，低延迟、免运维
-- 使用 EdgeKV 管理配置
+- 使用 KV 存储管理配置
 - 单一接口，结构简单，便于维护
 
 ## 部署指南
 
 1. Fork 本仓库
-2. 配置 ESA 环境（即 EdgeKV 存储），详见文档说明
-3. 将代码部署到 ESA「函数与Pages」
+2. 配置 KV 存储环境
+3. 将代码部署到 Serverless 平台
 4. 配置域名解析
 5. 验证接口是否正常工作
 
