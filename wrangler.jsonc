@@ -1,0 +1,10 @@
+{
+  "name": "random-img-api",
+  "main": "index.js",
+  "compatibility_date": "2026-03-15",
+
+  // Cloudflare Workers KV mode
+  "vars": {
+    "KV_PROVIDER": "CF"
+  }
+}

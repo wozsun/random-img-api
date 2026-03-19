@@ -1,6 +1,6 @@
 {
-    "name": "api",
-    "entry": "./main/index.js",
+    "name": "random-img-api",
+    "entry": "./index.js",
     "installCommand": null,
     "buildCommand": null
 }

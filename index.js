@@ -1,0 +1,305 @@
+import { getKvJsonObjectCached, getKvUrlCached } from "./utils/kv.js";
+import { detailedErrorResponse, jsonErrorResponse } from "./utils/response.js";
+
+const RANDOM_IMG_CONFIG_NAMESPACE = "random-img-config";
+const FOLDER_MAP_KEY = "FOLDER_MAP";
+const BASE_IMAGE_URL_KEY = "BASE_IMAGE_URL";
+
+const ALLOWED_PARAMS = ["d", "b", "t", "m"];
+const MAP_DEVICES = ["pc", "mb"];
+const REQUEST_DEVICES = [...MAP_DEVICES, "r"];
+const BRIGHTNESS_VALUES = ["dark", "light"];
+const METHOD_VALUES = ["proxy", "redirect"];
+
+const IMAGE_FILENAME_DIGITS = 6;
+const UPSTREAM_FETCH_MAX_ATTEMPTS = 3;
+const UPSTREAM_FETCH_RETRY_BASE_DELAY_MS = 100;
+const REDIRECT_ENABLED = true;
+
+const ALLOWED_PARAMS_SET = new Set(ALLOWED_PARAMS);
+const REQUEST_DEVICE_SET = new Set(REQUEST_DEVICES);
+const BRIGHTNESS_SET = new Set(BRIGHTNESS_VALUES);
+const METHOD_SET = new Set(METHOD_VALUES);
+
+const RANDOM_IMG_ERRORS = {
+	INVALID_QUERY_PARAMS: { status: 400, message: "Bad Request: Invalid query parameters" },
+	INVALID_DEVICE: { status: 400, message: "Bad Request: Invalid device" },
+	INVALID_BRIGHTNESS: { status: 400, message: "Bad Request: Invalid brightness" },
+	INVALID_THEME: { status: 400, message: "Bad Request: Invalid theme" },
+	INVALID_METHOD: { status: 400, message: "Bad Request: Invalid method" },
+	BASE_IMAGE_URL_CONFIG_ERROR: { status: 500, message: "Internal Server Error: BASE_IMAGE_URL is invalid or missing in KV" },
+	FOLDER_MAP_CONFIG_ERROR: { status: 500, message: "Internal Server Error: FOLDER_MAP is invalid or missing in KV" },
+	NO_IMAGES_FOR_COMBINATION: { status: 404, message: "Not Found: No available images for the selected filters" },
+	NO_AVAILABLE_IMAGES: { status: 404, message: "Not Found: No available images" },
+	REDIRECT_RESPONSE_EXCEPTION: { status: 502, message: "Bad Gateway: Failed to construct redirect response" },
+	UPSTREAM_BAD_STATUS: { status: 502, message: "Bad Gateway: Upstream image service responded with a non-success status" },
+	UPSTREAM_FETCH_EXCEPTION: { status: 502, message: "Bad Gateway: Failed to reach upstream image service due to network/runtime exception" },
+};
+
+const FOLDER_MAP_CONFIG_ERROR_DETAILS = {
+	hint: "Ensure FOLDER_MAP exists in KV and contains a valid JSON object",
+};
+
+const BASE_IMAGE_URL_CONFIG_ERROR_DETAILS = {
+	hint: "Ensure BASE_IMAGE_URL exists in KV and is a non-empty URL string",
+};
+
+let validThemeCache = {
+	themes: null,
+	themeSet: null,
+	sourceRef: null,
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const invalidFieldError = (error, field, received, allowed = undefined) => {
+	const details = { field, received };
+	if (allowed) {
+		details.allowed = allowed;
+	}
+	return detailedErrorResponse(error, details);
+};
+
+const validateAllowedQueryParams = (params) => {
+	for (const key of params.keys()) {
+		if (!ALLOWED_PARAMS_SET.has(key)) {
+			return detailedErrorResponse(RANDOM_IMG_ERRORS.INVALID_QUERY_PARAMS, {
+				invalidParams: [key],
+				allowedParams: ALLOWED_PARAMS,
+			});
+		}
+	}
+	return null;
+};
+
+const buildValidThemes = (folderMap) =>
+	Array.from(
+		new Set(
+			MAP_DEVICES.flatMap((device) =>
+				Object.values(folderMap[device] ?? {}).flatMap((brightnessMap) =>
+					Object.keys(brightnessMap ?? {})
+				)
+			)
+		)
+	);
+
+const ensureValidThemeCache = (folderMap) => {
+	if (validThemeCache.themes && validThemeCache.sourceRef === folderMap) {
+		return validThemeCache;
+	}
+
+	const themes = buildValidThemes(folderMap);
+	validThemeCache = {
+		themes,
+		themeSet: new Set(themes),
+		sourceRef: folderMap,
+	};
+
+	return validThemeCache;
+};
+
+const buildImageUrl = (baseImageUrl, selectedFolder) => {
+	const imageNumber = Math.floor(Math.random() * selectedFolder.count) + 1;
+	const imageFilename = `${String(imageNumber).padStart(IMAGE_FILENAME_DIGITS, "0")}.webp`;
+	return `${baseImageUrl}${selectedFolder.device}-${selectedFolder.brightness}/${selectedFolder.theme}/${imageFilename}`;
+};
+
+const respondImageByMethod = async (method, imageUrl) => {
+	if (method === "redirect") {
+		try {
+			return new Response(null, {
+				status: 302,
+				headers: { Location: imageUrl },
+			});
+		} catch (error) {
+			return detailedErrorResponse(RANDOM_IMG_ERRORS.REDIRECT_RESPONSE_EXCEPTION, {
+				hint: "Redirect target is invalid for Location header",
+				errorName: error instanceof Error ? error.name : "unknown",
+			});
+		}
+	}
+
+	for (let attempt = 1; attempt <= UPSTREAM_FETCH_MAX_ATTEMPTS; attempt++) {
+		try {
+			const upstreamResponse = await fetch(imageUrl);
+
+			if (!upstreamResponse.ok) {
+				return detailedErrorResponse(RANDOM_IMG_ERRORS.UPSTREAM_BAD_STATUS, {
+					upstreamStatus: upstreamResponse.status,
+					upstreamStatusText: upstreamResponse.statusText || undefined,
+					hint: "Upstream responded but did not return a success status",
+				});
+			}
+
+			return new Response(upstreamResponse.body, {
+				status: upstreamResponse.status,
+				headers: upstreamResponse.headers,
+			});
+		} catch {
+			if (attempt >= UPSTREAM_FETCH_MAX_ATTEMPTS) {
+				return detailedErrorResponse(RANDOM_IMG_ERRORS.UPSTREAM_FETCH_EXCEPTION, {
+					hint: "Upstream request failed before receiving a valid response",
+					retryAttempts: attempt,
+				});
+			}
+			await sleep(UPSTREAM_FETCH_RETRY_BASE_DELAY_MS * attempt);
+		}
+	}
+};
+
+const handleRandomImg = async (request, env) => {
+	let params;
+	try {
+		params = new URL(request.url).searchParams;
+	} catch {
+		return detailedErrorResponse({
+			status: 400,
+			message: "Bad Request: Request URL is malformed or cannot be parsed",
+		}, {
+			hint: "Ensure the request URL is valid and properly encoded",
+		});
+	}
+
+	const invalidParamsResponse = validateAllowedQueryParams(params);
+	if (invalidParamsResponse) {
+		return invalidParamsResponse;
+	}
+
+	const method = params.get("m")?.toLowerCase() || "proxy";
+	if (!METHOD_SET.has(method)) {
+		return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_METHOD, "m", method, METHOD_VALUES);
+	}
+	const effectiveMethod = REDIRECT_ENABLED ? method : "proxy";
+
+	const requestedDevice = params.get("d")?.toLowerCase() || null;
+	if (requestedDevice && !REQUEST_DEVICE_SET.has(requestedDevice)) {
+		return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_DEVICE, "d", requestedDevice, REQUEST_DEVICES);
+	}
+
+	let autoDevice = "r";
+	if (!requestedDevice) {
+		const userAgent = request.headers.get("User-Agent") || "";
+		const isMobile = /Mobi|Android|iPhone/i.test(userAgent);
+		const isDesktop = /Windows|Macintosh|Linux x86_64|X11/i.test(userAgent);
+		autoDevice = isMobile ? "mb" : (isDesktop ? "pc" : "r");
+	}
+	const device = requestedDevice || autoDevice;
+
+	const requestedBrightness = params.get("b")?.toLowerCase() || null;
+	if (requestedBrightness && !BRIGHTNESS_SET.has(requestedBrightness)) {
+		return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_BRIGHTNESS, "b", requestedBrightness, BRIGHTNESS_VALUES);
+	}
+
+	const themeParams = Array.from(new Set(params
+		.getAll("t")
+		.flatMap((value) => value.split(","))
+		.map((value) => value.trim().toLowerCase())
+		.filter(Boolean)));
+
+	const deviceCandidates = device === "r" ? MAP_DEVICES : [device];
+	const brightnessCandidates = requestedBrightness ? [requestedBrightness] : BRIGHTNESS_VALUES;
+
+	const folderMap = await getKvJsonObjectCached({
+		env,
+		namespace: RANDOM_IMG_CONFIG_NAMESPACE,
+		key: FOLDER_MAP_KEY,
+		cacheKey: "random-img::folder-map",
+	});
+	if (!folderMap) {
+		return detailedErrorResponse(RANDOM_IMG_ERRORS.FOLDER_MAP_CONFIG_ERROR, FOLDER_MAP_CONFIG_ERROR_DETAILS);
+	}
+
+	let themeCandidates;
+	if (themeParams.length > 0) {
+		const themeCache = ensureValidThemeCache(folderMap);
+		const invalidTheme = themeParams.find((candidateTheme) => !themeCache.themeSet.has(candidateTheme));
+		if (invalidTheme) {
+			return invalidFieldError(RANDOM_IMG_ERRORS.INVALID_THEME, "t", invalidTheme);
+		}
+		themeCandidates = themeParams;
+	} else {
+		themeCandidates = ensureValidThemeCache(folderMap).themes;
+	}
+
+	const candidates = [];
+	for (const candidateDevice of deviceCandidates) {
+		const deviceMap = folderMap[candidateDevice] ?? {};
+		for (const brightness of brightnessCandidates) {
+			for (const theme of themeCandidates) {
+				const count = Number(deviceMap?.[brightness]?.[theme] ?? 0);
+				if (Number.isFinite(count) && count > 0) {
+					candidates.push({ device: candidateDevice, brightness, theme, count });
+				}
+			}
+		}
+	}
+
+	if (candidates.length === 0) {
+		if (requestedBrightness || themeParams.length > 0) {
+			const filters = {
+				device,
+				brightness: requestedBrightness,
+			};
+			if (themeParams.length > 0) {
+				filters.themes = themeParams;
+			}
+			return detailedErrorResponse(RANDOM_IMG_ERRORS.NO_IMAGES_FOR_COMBINATION, { filters });
+		}
+		return detailedErrorResponse(RANDOM_IMG_ERRORS.NO_AVAILABLE_IMAGES, {
+			hint: "Check FOLDER_MAP counts in KV to ensure at least one image count is greater than 0",
+		});
+	}
+
+	let selectedFolder;
+	if (candidates.length === 1) {
+		selectedFolder = candidates[0];
+	} else {
+		const totalWeight = candidates.reduce((sum, candidate) => sum + candidate.count, 0);
+		if (!Number.isFinite(totalWeight) || totalWeight <= 0) {
+			return detailedErrorResponse(RANDOM_IMG_ERRORS.NO_AVAILABLE_IMAGES, {
+				hint: "No valid weighted candidates available",
+			});
+		}
+
+		let remainingWeight = Math.random() * totalWeight;
+		selectedFolder = null;
+		for (const candidate of candidates) {
+			remainingWeight -= candidate.count;
+			if (remainingWeight < 0) {
+				selectedFolder = candidate;
+				break;
+			}
+		}
+		if (!selectedFolder) {
+			selectedFolder = candidates[candidates.length - 1];
+		}
+	}
+
+	const baseImageUrl = await getKvUrlCached({
+		env,
+		namespace: RANDOM_IMG_CONFIG_NAMESPACE,
+		key: BASE_IMAGE_URL_KEY,
+		cacheKey: "random-img::base-image-url",
+	});
+	if (!baseImageUrl) {
+		return detailedErrorResponse(RANDOM_IMG_ERRORS.BASE_IMAGE_URL_CONFIG_ERROR, BASE_IMAGE_URL_CONFIG_ERROR_DETAILS);
+	}
+
+	return await respondImageByMethod(effectiveMethod, buildImageUrl(baseImageUrl, selectedFolder));
+};
+
+export default {
+	async fetch(request, env) {
+		try {
+			const url = new URL(request.url);
+			if (url.pathname === "/random-img") {
+				return await handleRandomImg(request, env);
+			}
+
+			return jsonErrorResponse({ status: 404, message: "API Not Found" });
+		} catch (error) {
+			console.error("Unhandled error in edge function:", error instanceof Error ? error.message : "unknown");
+			return jsonErrorResponse({ status: 500, message: "Internal Server Error" });
+		}
+	},
+};
