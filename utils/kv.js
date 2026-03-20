@@ -1,5 +1,5 @@
-import { detailedErrorResponse } from "./response.js";
 import { fetchFromKv as fetchFromKvCf } from "./kv-cf.js";
+import { fetchFromKv as fetchFromKvEo } from "./kv-eo.js";
 import { fetchFromKv as fetchFromKvEsa } from "./kv-esa.js";
 
 const KV_CACHE_TTL_MS = 60 * 1000;
@@ -11,6 +11,7 @@ const getKvProvider = (env) => env?.KV_PROVIDER || "ESA";
 const KV_PROVIDER_MAP = {
 	ESA: fetchFromKvEsa,
 	CF: fetchFromKvCf,
+	EO: fetchFromKvEo,
 };
 
 // 根据提供商配置分发 KV 读取请求
@@ -18,10 +19,7 @@ const fetchFromKv = async ({ env, namespace, key, type }) => {
 	const provider = getKvProvider(env);
 	const providerFetcher = KV_PROVIDER_MAP[provider];
 	if (!providerFetcher) {
-		return detailedErrorResponse(
-			{ status: 500, message: "Internal Server Error: Unsupported KV_PROVIDER" },
-			{ provider }
-		);
+		return null;
 	}
 	return providerFetcher({ env, namespace, key, type });
 };
