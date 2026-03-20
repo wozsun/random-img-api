@@ -31,7 +31,6 @@ const fetchFromKv = async ({ env, namespace, key, type }) => {
 	if (!kvClient || typeof kvClient.get !== "function") {
 		return null;
 	}
-
 	return withKvRetry(() => kvClient.get(key, { type }));
 };
 

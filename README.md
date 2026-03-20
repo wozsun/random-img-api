@@ -2,7 +2,7 @@
 
 ## 简介
 
-本项目是基于 Serverless 构建的随机图片 API。目前兼容 Cloudflare Workers 和 Aliyun ESA。
+本项目是基于 Serverless 构建的随机图片 API。目前兼容 Cloudflare Workers、 Aliyun ESA 以及 Tencent Cloud EdgeOne 三大边缘计算平台。
 
 ## 特性
 
@@ -52,7 +52,7 @@
 
 ## 配置说明
 
-### ESA KV 存储配置
+### KV 存储配置
 
 以下内容必须正确配置，否则相关接口将无法正常工作。
 
