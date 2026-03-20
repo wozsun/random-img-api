@@ -1,27 +1,38 @@
-import { fetchFromKv as fetchFromKvCf } from "./kv-cf.js";
-import { fetchFromKv as fetchFromKvEo } from "./kv-eo.js";
-import { fetchFromKv as fetchFromKvEsa } from "./kv-esa.js";
+import { getKvClient } from "./kv-providers.js";
 
 const KV_CACHE_TTL_MS = 60 * 1000;
 const KV_NEGATIVE_CACHE_TTL_MS = 3 * 1000;
+const KV_GET_MAX_ATTEMPTS = 5;
+const KV_RETRY_BASE_DELAY_MS = 60;
 
-// 从环境变量读取 KV 提供商标识，默认为 ESA
-const getKvProvider = (env) => env?.KV_PROVIDER || "ESA";
+// 异步等待指定毫秒数
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const KV_PROVIDER_MAP = {
-	ESA: fetchFromKvEsa,
-	CF: fetchFromKvCf,
-	EO: fetchFromKvEo,
+// 执行带线性退避重试的 KV 读取，失败返回 null
+const withKvRetry = async (loader) => {
+	for (let attempt = 1; attempt <= KV_GET_MAX_ATTEMPTS; attempt++) {
+		try {
+			const value = await loader();
+			return value ?? null;
+		} catch {
+			if (attempt >= KV_GET_MAX_ATTEMPTS) {
+				return null;
+			}
+			await sleep(KV_RETRY_BASE_DELAY_MS * attempt);
+		}
+	}
+
+	return null;
 };
 
-// 根据提供商配置分发 KV 读取请求
+// 根据提供商配置分发 KV 客户端并统一执行读取重试
 const fetchFromKv = async ({ env, namespace, key, type }) => {
-	const provider = getKvProvider(env);
-	const providerFetcher = KV_PROVIDER_MAP[provider];
-	if (!providerFetcher) {
+	const kvClient = getKvClient({ env, namespace });
+	if (!kvClient || typeof kvClient.get !== "function") {
 		return null;
 	}
-	return providerFetcher({ env, namespace, key, type });
+
+	return withKvRetry(() => kvClient.get(key, { type }));
 };
 
 const cacheStores = {
