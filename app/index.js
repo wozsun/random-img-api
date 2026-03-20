@@ -1,5 +1,5 @@
-import { getKvJsonObjectCached, getKvUrlCached } from "./utils/kv.js";
-import { detailedErrorResponse } from "./utils/response.js";
+import { getKvJsonObjectCached, getKvUrlCached } from "../utils/kv.js";
+import { detailedErrorResponse } from "../utils/response.js";
 
 const RANDOM_IMG_CONFIG_NAMESPACE = "random-img-config";
 const FOLDER_MAP_KEY = "FOLDER_MAP";
