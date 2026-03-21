@@ -3,10 +3,7 @@ import { getKvClient } from "./kv-providers.js";
 const KV_CACHE_TTL_MS = 60 * 1000;
 const KV_NEGATIVE_CACHE_TTL_MS = 3 * 1000;
 const KV_GET_MAX_ATTEMPTS = 5;
-const KV_RETRY_BASE_DELAY_MS = 60;
-
-// 异步等待指定毫秒数
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const KV_RETRY_BASE_DELAY_MS = 50;
 
 // 执行带线性退避重试的 KV 读取，失败返回 null
 const withKvRetry = async (loader) => {
@@ -18,7 +15,7 @@ const withKvRetry = async (loader) => {
 			if (attempt >= KV_GET_MAX_ATTEMPTS) {
 				return null;
 			}
-			await sleep(KV_RETRY_BASE_DELAY_MS * attempt);
+			await new Promise((resolve) => setTimeout(resolve, KV_RETRY_BASE_DELAY_MS * attempt));
 		}
 	}
 

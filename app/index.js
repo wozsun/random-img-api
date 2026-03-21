@@ -1,5 +1,5 @@
 import { getKvJsonObjectCached, getKvUrlCached } from "../utils/kv.js";
-import { detailedErrorResponse } from "../utils/response.js";
+import { jsonErrorResponse } from "../utils/response.js";
 
 const RANDOM_IMG_CONFIG_NAMESPACE = "random-img-config";
 const FOLDER_MAP_KEY = "FOLDER_MAP";
@@ -12,8 +12,8 @@ const BRIGHTNESS_VALUES = ["dark", "light"];
 const METHOD_VALUES = ["proxy", "redirect"];
 
 const IMAGE_FILENAME_DIGITS = 6;
-const UPSTREAM_FETCH_MAX_ATTEMPTS = 3;
-const UPSTREAM_FETCH_RETRY_BASE_DELAY_MS = 100;
+const FETCH_MAX_ATTEMPTS = 3;
+const FETCH_RETRY_DELAY_MS = 100;
 const REDIRECT_ENABLED = true;
 
 const ALLOWED_PARAMS_SET = new Set(ALLOWED_PARAMS);
@@ -31,17 +31,8 @@ const RANDOM_IMG_ERRORS = {
 	FOLDER_MAP_CONFIG_ERROR: { status: 500, message: "Internal Server Error: FOLDER_MAP is invalid or missing in KV" },
 	NO_IMAGES_FOR_COMBINATION: { status: 404, message: "Not Found: No available images for the selected filters" },
 	NO_AVAILABLE_IMAGES: { status: 404, message: "Not Found: No available images" },
-	REDIRECT_RESPONSE_EXCEPTION: { status: 502, message: "Bad Gateway: Failed to construct redirect response" },
 	UPSTREAM_BAD_STATUS: { status: 502, message: "Bad Gateway: Upstream image service responded with a non-success status" },
 	UPSTREAM_FETCH_EXCEPTION: { status: 502, message: "Bad Gateway: Failed to reach upstream image service due to network/runtime exception" },
-};
-
-const FOLDER_MAP_CONFIG_ERROR_DETAILS = {
-	hint: "Ensure FOLDER_MAP exists in KV and contains a valid JSON object",
-};
-
-const BASE_IMAGE_URL_CONFIG_ERROR_DETAILS = {
-	hint: "Ensure BASE_IMAGE_URL exists in KV and is a non-empty URL string",
 };
 
 let validThemeCache = {
@@ -50,23 +41,20 @@ let validThemeCache = {
 	sourceRef: null,
 };
 
-// 异步等待指定毫秒数
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 // 构造字段校验失败的错误响应，包含字段名、实际值及可选的允许列表
 const fieldErrorResponse = (error, field, received, allowed = undefined) => {
 	const details = { field, received };
 	if (allowed) {
 		details.allowed = allowed;
 	}
-	return detailedErrorResponse(error, details);
+	return jsonErrorResponse(error, details);
 };
 
 // 校验请求的查询参数是否均在允许列表内
 const validateAllowedQueryParams = (params) => {
 	for (const key of params.keys()) {
 		if (!ALLOWED_PARAMS_SET.has(key)) {
-			return detailedErrorResponse(RANDOM_IMG_ERRORS.INVALID_QUERY_PARAMS, {
+			return jsonErrorResponse(RANDOM_IMG_ERRORS.INVALID_QUERY_PARAMS, {
 				invalidParams: [key],
 				allowedParams: ALLOWED_PARAMS,
 			});
@@ -113,25 +101,18 @@ const buildImageUrl = (baseImageUrl, selectedFolder) => {
 // 按照指定方式（proxy/redirect）响应图片请求
 const respondImageByMethod = async (method, imageUrl) => {
 	if (method === "redirect") {
-		try {
-			return new Response(null, {
-				status: 302,
-				headers: { Location: imageUrl },
-			});
-		} catch (error) {
-			return detailedErrorResponse(RANDOM_IMG_ERRORS.REDIRECT_RESPONSE_EXCEPTION, {
-				hint: "Redirect target is invalid for Location header",
-				errorName: error instanceof Error ? error.name : "unknown",
-			});
-		}
+		return new Response(null, {
+			status: 302,
+			headers: { Location: imageUrl },
+		});
 	}
 
-	for (let attempt = 1; attempt <= UPSTREAM_FETCH_MAX_ATTEMPTS; attempt++) {
+	for (let attempt = 1; attempt <= FETCH_MAX_ATTEMPTS; attempt++) {
 		try {
 			const upstreamResponse = await fetch(imageUrl);
 
 			if (!upstreamResponse.ok) {
-				return detailedErrorResponse(RANDOM_IMG_ERRORS.UPSTREAM_BAD_STATUS, {
+				return jsonErrorResponse(RANDOM_IMG_ERRORS.UPSTREAM_BAD_STATUS, {
 					upstreamStatus: upstreamResponse.status,
 					upstreamStatusText: upstreamResponse.statusText || undefined,
 					hint: "Upstream responded but did not return a success status",
@@ -143,13 +124,13 @@ const respondImageByMethod = async (method, imageUrl) => {
 				headers: upstreamResponse.headers,
 			});
 		} catch {
-			if (attempt >= UPSTREAM_FETCH_MAX_ATTEMPTS) {
-				return detailedErrorResponse(RANDOM_IMG_ERRORS.UPSTREAM_FETCH_EXCEPTION, {
+			if (attempt >= FETCH_MAX_ATTEMPTS) {
+				return jsonErrorResponse(RANDOM_IMG_ERRORS.UPSTREAM_FETCH_EXCEPTION, {
 					hint: "Upstream request failed before receiving a valid response",
 					retryAttempts: attempt,
 				});
 			}
-			await sleep(UPSTREAM_FETCH_RETRY_BASE_DELAY_MS * attempt);
+			await new Promise((resolve) => setTimeout(resolve, FETCH_RETRY_DELAY_MS * attempt));
 		}
 	}
 };
@@ -160,7 +141,7 @@ const handleRandomImg = async (request, env) => {
 	try {
 		params = new URL(request.url).searchParams;
 	} catch {
-		return detailedErrorResponse({
+		return jsonErrorResponse({
 			status: 400,
 			message: "Bad Request: Request URL is malformed or cannot be parsed",
 		}, {
@@ -214,7 +195,7 @@ const handleRandomImg = async (request, env) => {
 		cacheKey: "random-img::folder-map",
 	});
 	if (!folderMap) {
-		return detailedErrorResponse(RANDOM_IMG_ERRORS.FOLDER_MAP_CONFIG_ERROR, FOLDER_MAP_CONFIG_ERROR_DETAILS);
+		return jsonErrorResponse(RANDOM_IMG_ERRORS.FOLDER_MAP_CONFIG_ERROR);
 	}
 
 	let themeCandidates;
@@ -251,9 +232,9 @@ const handleRandomImg = async (request, env) => {
 			if (themeParams.length > 0) {
 				filters.themes = themeParams;
 			}
-			return detailedErrorResponse(RANDOM_IMG_ERRORS.NO_IMAGES_FOR_COMBINATION, { filters });
+			return jsonErrorResponse(RANDOM_IMG_ERRORS.NO_IMAGES_FOR_COMBINATION, { filters });
 		}
-		return detailedErrorResponse(RANDOM_IMG_ERRORS.NO_AVAILABLE_IMAGES, {
+		return jsonErrorResponse(RANDOM_IMG_ERRORS.NO_AVAILABLE_IMAGES, {
 			hint: "Check FOLDER_MAP counts in KV to ensure at least one image count is greater than 0",
 		});
 	}
@@ -264,7 +245,7 @@ const handleRandomImg = async (request, env) => {
 	} else {
 		const totalWeight = candidates.reduce((sum, candidate) => sum + candidate.count, 0);
 		if (!Number.isFinite(totalWeight) || totalWeight <= 0) {
-			return detailedErrorResponse(RANDOM_IMG_ERRORS.NO_AVAILABLE_IMAGES, {
+			return jsonErrorResponse(RANDOM_IMG_ERRORS.NO_AVAILABLE_IMAGES, {
 				hint: "No valid weighted candidates available",
 			});
 		}
@@ -290,7 +271,7 @@ const handleRandomImg = async (request, env) => {
 		cacheKey: "random-img::base-image-url",
 	});
 	if (!baseImageUrl) {
-		return detailedErrorResponse(RANDOM_IMG_ERRORS.BASE_IMAGE_URL_CONFIG_ERROR, BASE_IMAGE_URL_CONFIG_ERROR_DETAILS);
+		return jsonErrorResponse(RANDOM_IMG_ERRORS.BASE_IMAGE_URL_CONFIG_ERROR);
 	}
 
 	return await respondImageByMethod(effectiveMethod, buildImageUrl(baseImageUrl, selectedFolder));
@@ -304,10 +285,10 @@ export default {
 				return await handleRandomImg(request, env);
 			}
 
-			return detailedErrorResponse({ status: 404, message: "API Not Found" });
+			return jsonErrorResponse({ status: 404, message: "API Not Found" });
 		} catch (error) {
 			console.error("Unhandled error in edge function:", error instanceof Error ? error.message : "unknown");
-			return detailedErrorResponse({ status: 500, message: "Internal Server Error" });
+			return jsonErrorResponse({ status: 500, message: "Internal Server Error" });
 		}
 	},
 };

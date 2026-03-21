@@ -1,5 +1,5 @@
 // 构造包含可选详情字段的 JSON 错误响应
-export const detailedErrorResponse = (error, details = undefined, spaces = 2) => {
+export const jsonErrorResponse = (error, details = undefined, spaces = 2) => {
 	const payload = {
 		status: error.status,
 		message: error.message,
