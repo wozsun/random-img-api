@@ -32,14 +32,20 @@
 
 - 逗号分隔：`?t=theme1,theme2`
 - 重复参数：`?t=theme1&t=theme2`
+- 排除语法：`?t=!theme1` 表示排除 `theme1`，从所有主题中去掉指定项
+- 排除多值：`?t=!theme1,!theme2` 或 `?t=!theme1&t=!theme2`
+
+> ⚠️ 包含与排除不可混用，例如 `?t=theme1,!theme2` 会返回 400 错误。
 
 示例：
 
 ```text
 /random-img
 /random-img?t=theme1
+/random-img?t=!theme1
 /random-img?d=r&t=theme1
 /random-img?d=mb&b=light&t=theme1,theme2
+/random-img?d=pc&b=dark&t=!theme1&m=redirect
 /random-img?d=pc&b=dark&t=theme1&t=theme2&m=redirect
 ```
 

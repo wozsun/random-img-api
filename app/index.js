@@ -26,6 +26,7 @@ const RANDOM_IMG_ERRORS = {
 	INVALID_DEVICE: { status: 400, message: "Bad Request: Invalid device" },
 	INVALID_BRIGHTNESS: { status: 400, message: "Bad Request: Invalid brightness" },
 	INVALID_THEME: { status: 400, message: "Bad Request: Invalid theme" },
+	THEME_CONFLICT: { status: 400, message: "Bad Request: Cannot mix include and exclude theme selectors" },
 	INVALID_METHOD: { status: 400, message: "Bad Request: Invalid method" },
 	BASE_IMAGE_URL_CONFIG_ERROR: { status: 500, message: "Internal Server Error: BASE_IMAGE_URL is invalid or missing in KV" },
 	FOLDER_MAP_CONFIG_ERROR: { status: 500, message: "Internal Server Error: FOLDER_MAP is invalid or missing in KV" },
@@ -179,11 +180,21 @@ const handleRandomImg = async (request, env) => {
 		return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_BRIGHTNESS, "b", requestedBrightness, BRIGHTNESS_VALUES);
 	}
 
-	const themeParams = Array.from(new Set(params
+	const rawThemeParams = Array.from(new Set(params
 		.getAll("t")
 		.flatMap((value) => value.split(","))
 		.map((value) => value.trim().toLowerCase())
 		.filter(Boolean)));
+
+	const includeThemes = rawThemeParams.filter((v) => !v.startsWith("!"));
+	const excludeThemes = rawThemeParams.filter((v) => v.startsWith("!")).map((v) => v.slice(1)).filter(Boolean);
+
+	if (includeThemes.length > 0 && excludeThemes.length > 0) {
+		return jsonErrorResponse(RANDOM_IMG_ERRORS.THEME_CONFLICT, {
+			include: includeThemes,
+			exclude: excludeThemes,
+		});
+	}
 
 	const deviceCandidates = device === "r" ? MAP_DEVICES : [device];
 	const brightnessCandidates = requestedBrightness ? [requestedBrightness] : BRIGHTNESS_VALUES;
@@ -198,16 +209,25 @@ const handleRandomImg = async (request, env) => {
 		return jsonErrorResponse(RANDOM_IMG_ERRORS.FOLDER_MAP_CONFIG_ERROR);
 	}
 
-	let themeCandidates;
-	if (themeParams.length > 0) {
-		const themeCache = ensureValidThemeCache(folderMap);
-		const invalidTheme = themeParams.find((candidateTheme) => !themeCache.themeSet.has(candidateTheme));
+	const themeCache = ensureValidThemeCache(folderMap);
+	const allMentionedThemes = [...includeThemes, ...excludeThemes];
+
+	if (allMentionedThemes.length > 0) {
+		const invalidTheme = allMentionedThemes.find((t) => !themeCache.themeSet.has(t));
 		if (invalidTheme) {
-			return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_THEME, "t", invalidTheme);
+			const received = excludeThemes.includes(invalidTheme) ? `!${invalidTheme}` : invalidTheme;
+			return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_THEME, "t", received);
 		}
-		themeCandidates = themeParams;
+	}
+
+	let themeCandidates;
+	if (includeThemes.length > 0) {
+		themeCandidates = includeThemes;
+	} else if (excludeThemes.length > 0) {
+		const excludeSet = new Set(excludeThemes);
+		themeCandidates = themeCache.themes.filter((t) => !excludeSet.has(t));
 	} else {
-		themeCandidates = ensureValidThemeCache(folderMap).themes;
+		themeCandidates = themeCache.themes;
 	}
 
 	const candidates = [];
@@ -224,13 +244,16 @@ const handleRandomImg = async (request, env) => {
 	}
 
 	if (candidates.length === 0) {
-		if (requestedBrightness || themeParams.length > 0) {
+		if (requestedBrightness || includeThemes.length > 0 || excludeThemes.length > 0) {
 			const filters = {
 				device,
 				brightness: requestedBrightness,
 			};
-			if (themeParams.length > 0) {
-				filters.themes = themeParams;
+			if (includeThemes.length > 0) {
+				filters.themes = includeThemes;
+			}
+			if (excludeThemes.length > 0) {
+				filters.excludedThemes = excludeThemes;
 			}
 			return jsonErrorResponse(RANDOM_IMG_ERRORS.NO_IMAGES_FOR_COMBINATION, { filters });
 		}
