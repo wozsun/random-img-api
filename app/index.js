@@ -199,14 +199,25 @@ const handleRandomImg = async (request, env) => {
 	const deviceCandidates = device === "r" ? MAP_DEVICES : [device];
 	const brightnessCandidates = requestedBrightness ? [requestedBrightness] : BRIGHTNESS_VALUES;
 
-	const folderMap = await getKvJsonObjectCached({
-		env,
-		namespace: RANDOM_IMG_CONFIG_NAMESPACE,
-		key: FOLDER_MAP_KEY,
-		cacheKey: "random-img::folder-map",
-	});
+	const [folderMap, baseImageUrl] = await Promise.all([
+		getKvJsonObjectCached({
+			env,
+			namespace: RANDOM_IMG_CONFIG_NAMESPACE,
+			key: FOLDER_MAP_KEY,
+			cacheKey: "random-img::folder-map",
+		}),
+		getKvUrlCached({
+			env,
+			namespace: RANDOM_IMG_CONFIG_NAMESPACE,
+			key: BASE_IMAGE_URL_KEY,
+			cacheKey: "random-img::base-image-url",
+		}),
+	]);
 	if (!folderMap) {
 		return jsonErrorResponse(RANDOM_IMG_ERRORS.FOLDER_MAP_CONFIG_ERROR);
+	}
+	if (!baseImageUrl) {
+		return jsonErrorResponse(RANDOM_IMG_ERRORS.BASE_IMAGE_URL_CONFIG_ERROR);
 	}
 
 	const themeCache = ensureValidThemeCache(folderMap);
@@ -287,22 +298,16 @@ const handleRandomImg = async (request, env) => {
 		}
 	}
 
-	const baseImageUrl = await getKvUrlCached({
-		env,
-		namespace: RANDOM_IMG_CONFIG_NAMESPACE,
-		key: BASE_IMAGE_URL_KEY,
-		cacheKey: "random-img::base-image-url",
-	});
-	if (!baseImageUrl) {
-		return jsonErrorResponse(RANDOM_IMG_ERRORS.BASE_IMAGE_URL_CONFIG_ERROR);
-	}
-
 	return await respondImageByMethod(effectiveMethod, buildImageUrl(baseImageUrl, selectedFolder));
 };
 
 export default {
 	async fetch(request, env) {
 		try {
+			if (request.method !== "GET") {
+				return jsonErrorResponse({ status: 405, message: "Method Not Allowed" });
+			}
+
 			const url = new URL(request.url);
 			if (url.pathname === "/random-img") {
 				return await handleRandomImg(request, env);
