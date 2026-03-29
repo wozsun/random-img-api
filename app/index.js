@@ -1,26 +1,39 @@
 import { getKvJsonObjectCached, getKvUrlCached } from "../utils/kv.js";
 import { jsonErrorResponse } from "../utils/response.js";
 
+// KV 命名空间与键名
 const RANDOM_IMG_CONFIG_NAMESPACE = "random-img-config";
 const FOLDER_MAP_KEY = "FOLDER_MAP";
 const BASE_IMAGE_URL_KEY = "BASE_IMAGE_URL";
 
+// 允许的查询参数：d=设备, b=亮度, t=主题, m=响应方式
 const ALLOWED_PARAMS = ["d", "b", "t", "m"];
+// folderMap 中的设备类型：pc=桌面端, mb=移动端
 const MAP_DEVICES = ["pc", "mb"];
+// 请求可接受的设备值：在 MAP_DEVICES 基础上增加 r = 强制随机
 const REQUEST_DEVICES = [...MAP_DEVICES, "r"];
+// 可选亮度值
 const BRIGHTNESS_VALUES = ["dark", "light"];
+// 可选响应方式：proxy=代理转发, redirect=302 重定向
 const METHOD_VALUES = ["proxy", "redirect"];
 
-const IMAGE_FILENAME_DIGITS = 6;
+// 代理模式下上游请求的最大重试次数
 const FETCH_MAX_ATTEMPTS = 3;
-const FETCH_RETRY_DELAY_MS = 100;
+// 重试间隔基数（毫秒），实际延迟 = 基数 × 当前重试次数
+const FETCH_RETRY_DELAY_MS = 50;
+// 是否允许使用 redirect 方式（关闭则强制 proxy）
 const REDIRECT_ENABLED = true;
 
+// 图片文件名中序号的位数（如 000001.webp）
+const IMAGE_FILENAME_DIGITS = 6;
+
+// 将数组转为 Set，用于 O(1) 校验
 const ALLOWED_PARAMS_SET = new Set(ALLOWED_PARAMS);
 const REQUEST_DEVICE_SET = new Set(REQUEST_DEVICES);
 const BRIGHTNESS_SET = new Set(BRIGHTNESS_VALUES);
 const METHOD_SET = new Set(METHOD_VALUES);
 
+// 统一错误定义：status 为 HTTP 状态码，message 为错误描述
 const RANDOM_IMG_ERRORS = {
 	INVALID_QUERY_PARAMS: { status: 400, message: "Bad Request: Invalid query parameters" },
 	INVALID_DEVICE: { status: 400, message: "Bad Request: Invalid device" },
