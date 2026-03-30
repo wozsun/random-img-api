@@ -187,11 +187,13 @@ const handleRandomImg = async (request, env) => {
 		autoDevice = isMobile ? "mb" : (isDesktop ? "pc" : "r");
 	}
 	const device = requestedDevice || autoDevice;
+	const deviceCandidates = device === "r" ? MAP_DEVICES : [device];
 
 	const requestedBrightness = params.get("b")?.toLowerCase() || null;
 	if (requestedBrightness && !BRIGHTNESS_SET.has(requestedBrightness)) {
 		return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_BRIGHTNESS, "b", requestedBrightness, BRIGHTNESS_VALUES);
 	}
+	const brightnessCandidates = requestedBrightness ? [requestedBrightness] : BRIGHTNESS_VALUES;
 
 	const rawThemeParams = Array.from(new Set(params
 		.getAll("t")
@@ -208,9 +210,6 @@ const handleRandomImg = async (request, env) => {
 			exclude: excludeThemes,
 		});
 	}
-
-	const deviceCandidates = device === "r" ? MAP_DEVICES : [device];
-	const brightnessCandidates = requestedBrightness ? [requestedBrightness] : BRIGHTNESS_VALUES;
 
 	const [folderMap, baseImageUrl] = await Promise.all([
 		getKvJsonObjectCached({
