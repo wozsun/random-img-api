@@ -49,6 +49,7 @@ const RANDOM_IMG_ERRORS = {
 	UPSTREAM_FETCH_EXCEPTION: { status: 502, message: "Bad Gateway: Failed to reach upstream image service due to network/runtime exception" },
 };
 
+// 模块级主题缓存，通过 sourceRef 引用比较判断 folderMap 是否变更，避免重复构建
 let validThemeCache = {
 	themes: null,
 	themeSet: null,
@@ -121,6 +122,7 @@ const respondImageByMethod = async (method, imageUrl) => {
 		});
 	}
 
+	// proxy 模式：请求上游并透传响应，失败时线性退避重试
 	for (let attempt = 1; attempt <= FETCH_MAX_ATTEMPTS; attempt++) {
 		try {
 			const upstreamResponse = await fetch(imageUrl);
@@ -168,6 +170,7 @@ const handleRandomImg = async (request, env) => {
 		return invalidParamsResponse;
 	}
 
+	// 解析响应方式，默认 proxy；若全局禁用 redirect 则强制降级为 proxy
 	const method = params.get("m")?.toLowerCase() || "proxy";
 	if (!METHOD_SET.has(method)) {
 		return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_METHOD, "m", method, METHOD_VALUES);
@@ -179,6 +182,7 @@ const handleRandomImg = async (request, env) => {
 		return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_DEVICE, "d", requestedDevice, REQUEST_DEVICES);
 	}
 
+	// 未指定设备时，根据 User-Agent 自动推断；无法识别则回退到随机
 	let autoDevice = "r";
 	if (!requestedDevice) {
 		const userAgent = request.headers.get("User-Agent") || "";
@@ -195,12 +199,14 @@ const handleRandomImg = async (request, env) => {
 	}
 	const brightnessCandidates = requestedBrightness ? [requestedBrightness] : BRIGHTNESS_VALUES;
 
+	// 收集所有 t 参数，支持逗号分隔多值，统一小写并去重
 	const rawThemeParams = Array.from(new Set(params
 		.getAll("t")
 		.flatMap((value) => value.split(","))
 		.map((value) => value.trim().toLowerCase())
 		.filter(Boolean)));
 
+	// 分离包含/排除主题："!theme" 为排除，其余为包含，两者不可混用
 	const includeThemes = rawThemeParams.filter((v) => !v.startsWith("!"));
 	const excludeThemes = rawThemeParams.filter((v) => v.startsWith("!")).map((v) => v.slice(1)).filter(Boolean);
 
@@ -211,6 +217,7 @@ const handleRandomImg = async (request, env) => {
 		});
 	}
 
+	// 并行获取 KV 配置：文件夹映射表 和 图片基础 URL
 	const [folderMap, baseImageUrl] = await Promise.all([
 		getKvJsonObjectCached({
 			env,
@@ -232,6 +239,7 @@ const handleRandomImg = async (request, env) => {
 		return jsonErrorResponse(RANDOM_IMG_ERRORS.BASE_IMAGE_URL_CONFIG_ERROR);
 	}
 
+	// 校验用户指定的主题是否在 folderMap 中实际存在
 	const themeCache = ensureValidThemeCache(folderMap);
 	const allMentionedThemes = [...includeThemes, ...excludeThemes];
 
@@ -253,6 +261,7 @@ const handleRandomImg = async (request, env) => {
 		themeCandidates = themeCache.themes;
 	}
 
+	// 遍历 设备×亮度×主题 的所有组合，收集图片数 > 0 的候选项
 	const candidates = [];
 	for (const candidateDevice of deviceCandidates) {
 		const deviceMap = folderMap[candidateDevice] ?? {};
@@ -285,6 +294,7 @@ const handleRandomImg = async (request, env) => {
 		});
 	}
 
+	// 按图片数量加权随机选取一个候选文件夹，图片数越多被选中概率越大
 	let selectedFolder;
 	if (candidates.length === 1) {
 		selectedFolder = candidates[0];
@@ -313,6 +323,7 @@ const handleRandomImg = async (request, env) => {
 	return await respondImageByMethod(effectiveMethod, buildImageUrl(baseImageUrl, selectedFolder));
 };
 
+// Worker 入口：仅接受 GET 请求，根据路径分发至对应处理函数
 export default {
 	async fetch(request, env) {
 		try {
