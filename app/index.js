@@ -24,6 +24,9 @@ const FETCH_RETRY_DELAY_MS = 50;
 // 是否允许使用 redirect 方式（关闭则强制 proxy）
 const REDIRECT_ENABLED = true;
 
+// 是否在 proxy 模式下返回 X-Image-Info 响应头（包含图片分组信息）
+const IMAGE_INFO_HEADER_ENABLED = true;
+
 // 图片文件名中序号的位数（如 000001.webp）
 const IMAGE_FILENAME_DIGITS = 6;
 
@@ -106,15 +109,17 @@ const ensureValidThemeCache = (folderMap) => {
 	return validThemeCache;
 };
 
-// 根据 baseImageUrl 和所选文件夹信息构造随机图片 URL
-const buildImageUrl = (baseImageUrl, selectedFolder) => {
+// 根据 baseImageUrl 和所选文件夹信息构造随机图片 URL 及图片信息标识
+const buildImageResult = (baseImageUrl, selectedFolder) => {
 	const imageNumber = Math.floor(Math.random() * selectedFolder.count) + 1;
 	const imageFilename = `${String(imageNumber).padStart(IMAGE_FILENAME_DIGITS, "0")}.webp`;
-	return `${baseImageUrl}${selectedFolder.device}-${selectedFolder.brightness}/${selectedFolder.theme}/${imageFilename}`;
+	const url = `${baseImageUrl}${selectedFolder.device}-${selectedFolder.brightness}/${selectedFolder.theme}/${imageFilename}`;
+	const imageInfo = `${selectedFolder.device}-${selectedFolder.brightness}-${selectedFolder.theme}-${imageNumber}`;
+	return { url, imageInfo };
 };
 
 // 按照指定方式（proxy/redirect）响应图片请求
-const respondImageByMethod = async (method, imageUrl) => {
+const respondImageByMethod = async (method, imageUrl, imageInfo) => {
 	if (method === "redirect") {
 		return new Response(null, {
 			status: 302,
@@ -135,10 +140,14 @@ const respondImageByMethod = async (method, imageUrl) => {
 				});
 			}
 
-			return new Response(upstreamResponse.body, {
+			const response = new Response(upstreamResponse.body, {
 				status: upstreamResponse.status,
 				headers: upstreamResponse.headers,
 			});
+			if (IMAGE_INFO_HEADER_ENABLED) {
+				response.headers.set("X-Image-Info", imageInfo);
+			}
+			return response;
 		} catch {
 			if (attempt >= FETCH_MAX_ATTEMPTS) {
 				return jsonErrorResponse(RANDOM_IMG_ERRORS.UPSTREAM_FETCH_EXCEPTION, {
@@ -320,7 +329,8 @@ const handleRandomImg = async (request, env) => {
 		}
 	}
 
-	return await respondImageByMethod(effectiveMethod, buildImageUrl(baseImageUrl, selectedFolder));
+	const { url, imageInfo } = buildImageResult(baseImageUrl, selectedFolder);
+	return await respondImageByMethod(effectiveMethod, url, imageInfo);
 };
 
 // Worker 入口：仅接受 GET 请求，根据路径分发至对应处理函数
