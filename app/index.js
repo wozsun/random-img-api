@@ -1,6 +1,10 @@
 import { getKvJsonObjectCached, getKvUrlCached } from "../utils/kv.js";
 import { jsonErrorResponse } from "../utils/response.js";
 
+// ===========================
+// 随机图片 API 配置
+// ===========================
+
 // KV 命名空间与键名
 const RANDOM_IMG_CONFIG_NAMESPACE = "random-img-config";
 const FOLDER_MAP_KEY = "FOLDER_MAP";
@@ -8,11 +12,13 @@ const BASE_IMAGE_URL_KEY = "BASE_IMAGE_URL";
 
 // 允许的查询参数：d=设备, b=亮度, t=主题, m=响应方式
 const ALLOWED_PARAMS = ["d", "b", "t", "m"];
+// 仅允许传入单个值的参数（主题 t 允许多值）
+const SINGLE_VALUE_PARAMS = ["d", "b", "m"];
 // folderMap 中的设备类型：pc=桌面端, mb=移动端
 const MAP_DEVICES = ["pc", "mb"];
 // 请求可接受的设备值：在 MAP_DEVICES 基础上增加 r = 强制随机
 const REQUEST_DEVICES = [...MAP_DEVICES, "r"];
-// 可选亮度值
+// 亮度类型：dark=暗色, light=亮色
 const BRIGHTNESS_VALUES = ["dark", "light"];
 // 可选响应方式：proxy=代理转发, redirect=302 重定向
 const METHOD_VALUES = ["proxy", "redirect"];
@@ -32,20 +38,24 @@ const IMAGE_INFO_HEADER_ENABLED = true;
 // proxy 模式下 X-Image-Info 响应头的名称
 const IMAGE_INFO_HEADER_NAME = "X-Image-Info";
 
+// 图片文件名数字位数，如 6 → 000001.webp
+const IMAGE_FILENAME_DIGITS = 6;
 // 图片文件扩展名
 const IMAGE_FILE_EXTENSION = ".webp";
-// 图片文件名中序号的位数（如 000001.webp）
-const IMAGE_FILENAME_DIGITS = 6;
 
 // 将数组转为 Set，用于 O(1) 校验
 const ALLOWED_PARAMS_SET = new Set(ALLOWED_PARAMS);
+const SINGLE_VALUE_PARAMS_SET = new Set(SINGLE_VALUE_PARAMS);
 const REQUEST_DEVICE_SET = new Set(REQUEST_DEVICES);
 const BRIGHTNESS_SET = new Set(BRIGHTNESS_VALUES);
 const METHOD_SET = new Set(METHOD_VALUES);
 
-// 统一错误定义：status 为 HTTP 状态码，message 为错误描述
-const RANDOM_IMG_ERRORS = {
+// ===========================
+// 随机图片 API 错误定义
+// ===========================
+const ERRORS = {
 	INVALID_QUERY_PARAMS: { status: 400, message: "Bad Request: Invalid query parameters" },
+	DUPLICATE_PARAM: { status: 400, message: "Bad Request: Duplicate query parameter" },
 	INVALID_DEVICE: { status: 400, message: "Bad Request: Invalid device" },
 	INVALID_BRIGHTNESS: { status: 400, message: "Bad Request: Invalid brightness" },
 	INVALID_THEME: { status: 400, message: "Bad Request: Invalid theme" },
@@ -66,22 +76,26 @@ let validThemeCache = {
 	sourceRef: null,
 };
 
-// 构造字段校验失败的错误响应，包含字段名、实际值及可选的允许列表
-const fieldErrorResponse = (error, field, received, allowed = undefined) => {
-	const details = { field, received };
-	if (allowed) {
-		details.allowed = allowed;
-	}
-	return jsonErrorResponse(error, details);
-};
-
 // 校验请求的查询参数是否均在允许列表内
 const validateAllowedQueryParams = (params) => {
 	for (const key of params.keys()) {
 		if (!ALLOWED_PARAMS_SET.has(key)) {
-			return jsonErrorResponse(RANDOM_IMG_ERRORS.INVALID_QUERY_PARAMS, {
+			return jsonErrorResponse(ERRORS.INVALID_QUERY_PARAMS, {
 				invalidParams: [key],
 				allowedParams: ALLOWED_PARAMS,
+			});
+		}
+	}
+	return null;
+};
+
+// 校验仅允许单值的参数是否存在重复
+const validateSingleValueParams = (params) => {
+	for (const key of params.keys()) {
+		if (SINGLE_VALUE_PARAMS_SET.has(key) && params.getAll(key).length > 1) {
+			return jsonErrorResponse(ERRORS.DUPLICATE_PARAM, {
+				field: key,
+				hint: "This parameter only accepts a single value",
 			});
 		}
 	}
@@ -102,6 +116,7 @@ const buildValidThemes = (folderMap) =>
 
 // 确保 validThemeCache 与当前 folderMap 同步，必要时重建
 const ensureValidThemeCache = (folderMap) => {
+	// 引用未变化，直接返回缓存结果
 	if (validThemeCache.themes && validThemeCache.sourceRef === folderMap) {
 		return validThemeCache;
 	}
@@ -139,8 +154,9 @@ const respondImageByMethod = async (method, imageUrl, imageInfo) => {
 		try {
 			const upstreamResponse = await fetch(imageUrl);
 
+			// 上游返回非 2xx 状态码，立即返回错误
 			if (!upstreamResponse.ok) {
-				return jsonErrorResponse(RANDOM_IMG_ERRORS.UPSTREAM_BAD_STATUS, {
+				return jsonErrorResponse(ERRORS.UPSTREAM_BAD_STATUS, {
 					upstreamStatus: upstreamResponse.status,
 					upstreamStatusText: upstreamResponse.statusText || undefined,
 					hint: "Upstream responded but did not return a success status",
@@ -156,8 +172,9 @@ const respondImageByMethod = async (method, imageUrl, imageInfo) => {
 			}
 			return response;
 		} catch {
+			// 已耗尽重试次数，返回上游请求失败错误
 			if (attempt >= FETCH_MAX_ATTEMPTS) {
-				return jsonErrorResponse(RANDOM_IMG_ERRORS.UPSTREAM_FETCH_EXCEPTION, {
+				return jsonErrorResponse(ERRORS.UPSTREAM_FETCH_EXCEPTION, {
 					hint: "Upstream request failed before receiving a valid response",
 					retryAttempts: attempt,
 				});
@@ -167,8 +184,17 @@ const respondImageByMethod = async (method, imageUrl, imageInfo) => {
 	}
 };
 
-// 处理 /random-img 路由的核心逻辑
+
+// ===========================
+// 随机图片主处理逻辑
+// 处理随机图片请求：参数校验 -> 候选组合筛选 -> 加权抽样 -> redirect/proxy 返回
+// ===========================
 const handleRandomImg = async (request, env) => {
+	// 仅允许 GET 请求，其余方法返回 405
+	if (request.method !== "GET") {
+		return jsonErrorResponse({ status: 405, message: "Method Not Allowed" });
+	}
+
 	let params;
 	try {
 		params = new URL(request.url).searchParams;
@@ -181,25 +207,33 @@ const handleRandomImg = async (request, env) => {
 		});
 	}
 
+	// 校验查询参数白名单，存在非法参数时直接返回错误
 	const invalidParamsResponse = validateAllowedQueryParams(params);
 	if (invalidParamsResponse) {
 		return invalidParamsResponse;
 	}
 
-	// 解析响应方式；若全局禁用 redirect 则强制降级为 proxy
+	// 校验单值参数不可重复，同一键只能出现一次
+	const duplicateParamResponse = validateSingleValueParams(params);
+	if (duplicateParamResponse) {
+		return duplicateParamResponse;
+	}
+
+	// 解析响应方式
 	const method = params.get("m")?.toLowerCase() || DEFAULT_METHOD;
 
 	// 校验 method 参数：仅允许 proxy 或 redirect
 	if (!METHOD_SET.has(method)) {
-		return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_METHOD, "m", method, METHOD_VALUES);
+		return jsonErrorResponse(ERRORS.INVALID_METHOD, { field: "m" });
 	}
 
 	// 强制开关：若关闭 redirect，则无论参数如何都用 proxy
 	const effectiveMethod = REDIRECT_ENABLED ? method : "proxy";
 
 	const requestedDevice = params.get("d")?.toLowerCase() || null;
+	// 校验设备参数合法性（允许 pc / mb / r）
 	if (requestedDevice && !REQUEST_DEVICE_SET.has(requestedDevice)) {
-		return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_DEVICE, "d", requestedDevice, REQUEST_DEVICES);
+		return jsonErrorResponse(ERRORS.INVALID_DEVICE, { field: "d" });
 	}
 
 	// 未指定设备时，根据 User-Agent 自动推断；无法识别则回退到随机
@@ -211,15 +245,22 @@ const handleRandomImg = async (request, env) => {
 		autoDevice = isMobile ? "mb" : (isDesktop ? "pc" : "r");
 	}
 	const device = requestedDevice || autoDevice;
-	const deviceCandidates = device === "r" ? MAP_DEVICES : [device];
+	// 构建设备候选列表："r" 展开为全部设备，否则仅用指定值
+	const deviceCandidates =
+		device === "r"
+		? MAP_DEVICES
+		: [device];
 
+	// 读取亮度参数（若未传则为 null）
 	const requestedBrightness = params.get("b")?.toLowerCase() || null;
+	// 校验亮度参数合法性（允许 dark / light ）
 	if (requestedBrightness && !BRIGHTNESS_SET.has(requestedBrightness)) {
-		return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_BRIGHTNESS, "b", requestedBrightness, BRIGHTNESS_VALUES);
+		return jsonErrorResponse(ERRORS.INVALID_BRIGHTNESS, { field: "b" });
 	}
+	// 构建亮度候选列表：指定时仅用该值，否则使用全部亮度
 	const brightnessCandidates = requestedBrightness ? [requestedBrightness] : BRIGHTNESS_VALUES;
 
-	// 收集所有 t 参数，支持逗号分隔多值，统一小写并去重
+	// 读取并归一化 theme 参数：支持多次传参与逗号分隔，最终统一小写并去重
 	const rawThemeParams = Array.from(new Set(params
 		.getAll("t")
 		.flatMap((value) => value.split(","))
@@ -231,9 +272,10 @@ const handleRandomImg = async (request, env) => {
 	const excludeThemes = rawThemeParams.filter((v) => v.startsWith("!")).map((v) => v.slice(1)).filter(Boolean);
 
 	if (includeThemes.length > 0 && excludeThemes.length > 0) {
-		return jsonErrorResponse(RANDOM_IMG_ERRORS.THEME_CONFLICT, {
+		return jsonErrorResponse(ERRORS.THEME_CONFLICT, {
 			include: includeThemes,
 			exclude: excludeThemes,
+			hint: "Use either include themes (e.g. t=nature) or exclude themes (e.g. t=!nature), not both",
 		});
 	}
 
@@ -253,10 +295,10 @@ const handleRandomImg = async (request, env) => {
 		}),
 	]);
 	if (!folderMap) {
-		return jsonErrorResponse(RANDOM_IMG_ERRORS.FOLDER_MAP_CONFIG_ERROR);
+		return jsonErrorResponse(ERRORS.FOLDER_MAP_CONFIG_ERROR);
 	}
 	if (!baseImageUrl) {
-		return jsonErrorResponse(RANDOM_IMG_ERRORS.BASE_IMAGE_URL_CONFIG_ERROR);
+		return jsonErrorResponse(ERRORS.BASE_IMAGE_URL_CONFIG_ERROR);
 	}
 
 	// 校验用户指定的主题是否在 folderMap 中实际存在
@@ -266,11 +308,11 @@ const handleRandomImg = async (request, env) => {
 	if (allMentionedThemes.length > 0) {
 		const invalidTheme = allMentionedThemes.find((t) => !themeCache.themeSet.has(t));
 		if (invalidTheme) {
-			const received = excludeThemes.includes(invalidTheme) ? `!${invalidTheme}` : invalidTheme;
-			return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_THEME, "t", received);
+			return jsonErrorResponse(ERRORS.INVALID_THEME, { field: "t" });
 		}
 	}
 
+	// 构建主题候选列表：有包含则直接用，有排除则从全量中过滤，均未指定则使用全部主题
 	let themeCandidates;
 	if (includeThemes.length > 0) {
 		themeCandidates = includeThemes;
@@ -295,37 +337,36 @@ const handleRandomImg = async (request, env) => {
 		}
 	}
 
+	// 候选池为空时，根据是否指定了过滤条件返回不同的 404 错误
 	if (candidates.length === 0) {
 		if (requestedBrightness || includeThemes.length > 0 || excludeThemes.length > 0) {
-			const filters = {
-				device,
-				brightness: requestedBrightness,
-			};
-			if (includeThemes.length > 0) {
-				filters.themes = includeThemes;
-			}
-			if (excludeThemes.length > 0) {
-				filters.excludedThemes = excludeThemes;
-			}
-			return jsonErrorResponse(RANDOM_IMG_ERRORS.NO_IMAGES_FOR_COMBINATION, { filters });
+			return jsonErrorResponse(ERRORS.NO_IMAGES_FOR_COMBINATION, {
+				filters: {
+					device,
+					brightness: requestedBrightness,
+					themes: themeCandidates,
+					excludedThemes: excludeThemes.length > 0 ? excludeThemes : undefined,
+				},
+			});
 		}
-		return jsonErrorResponse(RANDOM_IMG_ERRORS.NO_AVAILABLE_IMAGES, {
+		return jsonErrorResponse(ERRORS.NO_AVAILABLE_IMAGES, {
 			hint: "Check FOLDER_MAP counts in KV to ensure at least one image count is greater than 0",
 		});
 	}
 
-	// 按图片数量加权随机选取一个候选文件夹，图片数越多被选中概率越大
+	// 加权随机抽样：以 count 为权重选取候选组合，使每张图片被选中的概率趋于均等
 	let selectedFolder;
 	if (candidates.length === 1) {
 		selectedFolder = candidates[0];
 	} else {
 		const totalWeight = candidates.reduce((sum, candidate) => sum + candidate.count, 0);
+		// 总权重非法时兜底返回错误，避免随机逻辑异常
 		if (!Number.isFinite(totalWeight) || totalWeight <= 0) {
-			return jsonErrorResponse(RANDOM_IMG_ERRORS.NO_AVAILABLE_IMAGES, {
+			return jsonErrorResponse(ERRORS.NO_AVAILABLE_IMAGES, {
 				hint: "No valid weighted candidates available",
 			});
 		}
-
+		// 在 [0, totalWeight) 区间取随机点，线性递减直到命中
 		let remainingWeight = Math.random() * totalWeight;
 		selectedFolder = null;
 		for (const candidate of candidates) {
@@ -335,13 +376,14 @@ const handleRandomImg = async (request, env) => {
 				break;
 			}
 		}
+		// 浮点精度兜底：理论上不会触发，取最后一项作为保底
 		if (!selectedFolder) {
 			selectedFolder = candidates[candidates.length - 1];
 		}
 	}
 
-	const { url, imageInfo } = buildImageResult(baseImageUrl, selectedFolder);
-	return await respondImageByMethod(effectiveMethod, url, imageInfo);
+	const { url: imageUrl, imageInfo } = buildImageResult(baseImageUrl, selectedFolder);
+	return await respondImageByMethod(effectiveMethod, imageUrl, imageInfo);
 };
 
 // Worker 入口：仅接受 GET 请求，根据路径分发至对应处理函数
