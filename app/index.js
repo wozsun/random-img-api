@@ -21,12 +21,19 @@ const METHOD_VALUES = ["proxy", "redirect"];
 const FETCH_MAX_ATTEMPTS = 3;
 // 重试间隔基数（毫秒），实际延迟 = 基数 × 当前重试次数
 const FETCH_RETRY_DELAY_MS = 50;
+
+// 默认响应方式
+const DEFAULT_METHOD = "proxy";
 // 是否允许使用 redirect 方式（关闭则强制 proxy）
 const REDIRECT_ENABLED = true;
 
 // 是否在 proxy 模式下返回 X-Image-Info 响应头（包含图片分组信息）
 const IMAGE_INFO_HEADER_ENABLED = true;
+// proxy 模式下 X-Image-Info 响应头的名称
+const IMAGE_INFO_HEADER_NAME = "X-Image-Info";
 
+// 图片文件扩展名
+const IMAGE_FILE_EXTENSION = ".webp";
 // 图片文件名中序号的位数（如 000001.webp）
 const IMAGE_FILENAME_DIGITS = 6;
 
@@ -112,7 +119,7 @@ const ensureValidThemeCache = (folderMap) => {
 // 根据 baseImageUrl 和所选文件夹信息构造随机图片 URL 及图片信息标识
 const buildImageResult = (baseImageUrl, selectedFolder) => {
 	const imageNumber = Math.floor(Math.random() * selectedFolder.count) + 1;
-	const imageFilename = `${String(imageNumber).padStart(IMAGE_FILENAME_DIGITS, "0")}.webp`;
+	const imageFilename = `${String(imageNumber).padStart(IMAGE_FILENAME_DIGITS, "0")}${IMAGE_FILE_EXTENSION}`;
 	const url = `${baseImageUrl}${selectedFolder.device}-${selectedFolder.brightness}/${selectedFolder.theme}/${imageFilename}`;
 	const imageInfo = `${selectedFolder.device}-${selectedFolder.brightness}-${selectedFolder.theme}-${imageNumber}`;
 	return { url, imageInfo };
@@ -145,7 +152,7 @@ const respondImageByMethod = async (method, imageUrl, imageInfo) => {
 				headers: upstreamResponse.headers,
 			});
 			if (IMAGE_INFO_HEADER_ENABLED) {
-				response.headers.set("X-Image-Info", imageInfo);
+				response.headers.set(IMAGE_INFO_HEADER_NAME, imageInfo);
 			}
 			return response;
 		} catch {
@@ -179,11 +186,15 @@ const handleRandomImg = async (request, env) => {
 		return invalidParamsResponse;
 	}
 
-	// 解析响应方式，默认 proxy；若全局禁用 redirect 则强制降级为 proxy
-	const method = params.get("m")?.toLowerCase() || "proxy";
+	// 解析响应方式；若全局禁用 redirect 则强制降级为 proxy
+	const method = params.get("m")?.toLowerCase() || DEFAULT_METHOD;
+
+	// 校验 method 参数：仅允许 proxy 或 redirect
 	if (!METHOD_SET.has(method)) {
 		return fieldErrorResponse(RANDOM_IMG_ERRORS.INVALID_METHOD, "m", method, METHOD_VALUES);
 	}
+
+	// 强制开关：若关闭 redirect，则无论参数如何都用 proxy
 	const effectiveMethod = REDIRECT_ENABLED ? method : "proxy";
 
 	const requestedDevice = params.get("d")?.toLowerCase() || null;
