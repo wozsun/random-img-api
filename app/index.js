@@ -338,16 +338,15 @@ const handleRandomImg = async (request, env) => {
 	}
 
 	// 候选池为空时，根据是否指定了过滤条件返回不同的 404 错误
+	const hasFilters = Boolean(
+		requestedDevice ||
+		requestedBrightness ||
+		includeThemes.length > 0 ||
+		excludeThemes.length > 0
+	);
 	if (candidates.length === 0) {
-		if (requestedBrightness || includeThemes.length > 0 || excludeThemes.length > 0) {
-			return jsonErrorResponse(ERRORS.NO_IMAGES_FOR_COMBINATION, {
-				filters: {
-					device,
-					brightness: requestedBrightness,
-					themes: themeCandidates,
-					excludedThemes: excludeThemes.length > 0 ? excludeThemes : undefined,
-				},
-			});
+		if (hasFilters) {
+			return jsonErrorResponse(ERRORS.NO_IMAGES_FOR_COMBINATION);
 		}
 		return jsonErrorResponse(ERRORS.NO_AVAILABLE_IMAGES, {
 			hint: "Check FOLDER_MAP counts in KV to ensure at least one image count is greater than 0",
