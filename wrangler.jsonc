@@ -11,7 +11,7 @@
   // KV namespaces. Make sure to replace the "id" with your actual KV namespace ID.
   "kv_namespaces": [
     {
-      "binding": "random-img-config",
+      "binding": "random_img_config",
       "id": "1eb615e1c5724a0a90f260eeb27345d2"
     }
   ]

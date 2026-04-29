@@ -6,7 +6,7 @@ import { jsonErrorResponse } from "../utils/response.js";
 // ===========================
 
 // KV 命名空间与键名
-const RANDOM_IMG_CONFIG_NAMESPACE = "random-img-config";
+const RANDOM_IMG_CONFIG_NAMESPACE = "random_img_config";
 const FOLDER_MAP_KEY = "FOLDER_MAP";
 const BASE_IMAGE_URL_KEY = "BASE_IMAGE_URL";
 
