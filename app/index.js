@@ -27,6 +27,8 @@ const METHOD_VALUES = ["proxy", "redirect"];
 const FETCH_MAX_ATTEMPTS = 3;
 // 重试间隔基数（毫秒），实际延迟 = 基数 × 当前重试次数
 const FETCH_RETRY_DELAY_MS = 50;
+// 代理模式下可重试的临时上游 HTTP 状态码
+const RETRYABLE_UPSTREAM_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 // 默认响应方式
 const DEFAULT_METHOD = "proxy";
@@ -149,16 +151,23 @@ const respondImageByMethod = async (method, imageUrl, imageInfo) => {
 		});
 	}
 
-	// proxy 模式：请求上游并透传响应，失败时线性退避重试
+	// proxy 模式：请求上游并透传响应，网络异常或临时 HTTP 状态失败时线性退避重试
 	for (let attempt = 1; attempt <= FETCH_MAX_ATTEMPTS; attempt++) {
 		try {
 			const upstreamResponse = await fetch(imageUrl);
 
-			// 上游返回非 2xx 状态码，立即返回错误
+			// 上游返回非 2xx 状态码：临时状态重试，其他状态立即返回错误
 			if (!upstreamResponse.ok) {
+				if (
+					RETRYABLE_UPSTREAM_STATUS_CODES.has(upstreamResponse.status) &&
+					attempt < FETCH_MAX_ATTEMPTS
+				) {
+					await new Promise((resolve) => setTimeout(resolve, FETCH_RETRY_DELAY_MS * attempt));
+					continue;
+				}
+
 				return jsonErrorResponse(ERRORS.UPSTREAM_BAD_STATUS, {
 					upstreamStatus: upstreamResponse.status,
-					upstreamStatusText: upstreamResponse.statusText || undefined,
 					hint: "Upstream responded but did not return a success status",
 				});
 			}
@@ -385,13 +394,10 @@ const handleRandomImg = async (request, env) => {
 	return await respondImageByMethod(effectiveMethod, imageUrl, imageInfo);
 };
 
-// Worker 入口：仅接受 GET 请求，根据路径分发至对应处理函数
+// Worker 入口：根据路径分发至对应处理函数
 export default {
 	async fetch(request, env) {
 		try {
-			if (request.method !== "GET") {
-				return jsonErrorResponse({ status: 405, message: "Method Not Allowed" });
-			}
 
 			const url = new URL(request.url);
 			if (url.pathname === "/random-img") {

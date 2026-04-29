@@ -23,9 +23,9 @@
 
 | 参数 | 含义 | 可选值 | 默认值 |
 | --- | --- | --- | --- |
-| `d` | 设备类型 | `pc` / `mb` / `r`（强制随机） | 按 User-Agent 自动推断 `pc/mb` |
+| `d` | 设备类型 | `pc` / `mb` / `r`（强制随机） | 按 User-Agent 自动推断 `pc/mb`，无法识别则随机 |
 | `b` | 明暗类型 | `dark` / `light` | 随机 |
-| `t` | 主题（支持多值） | 任意存在于 `FOLDER_MAP` 全局的主题 | 随机 |
+| `t` | 主题（支持多值） | 任意存在于 `FOLDER_MAP` 配置中的主题 | 随机 |
 | `m` | 返回模式 | `proxy` / `redirect` | `proxy` |
 
 `t` 支持：
@@ -54,7 +54,7 @@
 - `m=proxy`：边缘函数回源拉图并透传内容
 - `m=redirect`：返回 `302`，`Location` 指向目标图片 URL
 
-> ⚠️ 隐私提示：`m=redirect`（302）模式不会隐藏上游图片源地址，客户端可直接看到图片仓库/分发源 URL。可通过修改仓库根目录 `index.js` 中的 `REDIRECT_ENABLED` 配置，启用或禁用 `redirect` 模式。当`REDIRECT_ENABLED = false`时，所有请求将强制使用 `proxy` 模式。
+> ⚠️ 隐私提示：`m=redirect`（302）模式不会隐藏上游图片源地址，客户端可直接看到图片仓库/分发源 URL。可通过修改 `app/index.js` 中的 `REDIRECT_ENABLED` 配置，启用或禁用 `redirect` 模式。当`REDIRECT_ENABLED = false`时，所有请求将强制使用 `proxy` 模式。
 
 ## 配置说明
 
@@ -62,19 +62,20 @@
 
 以下内容必须正确配置，否则相关接口将无法正常工作。
 
-命名空间：`random-img-config`。
+命名空间：`random_img_config`。
 
 兼容说明：
 
 - 默认按 ESA EdgeKV 方式读取
 - 若运行在 Cloudflare Workers KV，请在运行环境中设置 `KV_PROVIDER=CF`
 - 使用 CF 模式时，请确保同名命名空间以绑定形式挂在运行时 env 上
+- EdgeOne 入口会自动设置 `KV_PROVIDER=EO`，请确保同名命名空间以绑定形式挂在运行时全局对象上
 
 必需键：
 
 #### 1） `BASE_IMAGE_URL`
 
-图片基地址（字符串）。
+图片基地址（单行有效 URL 字符串）。代码会自动规范化 URL，并确保末尾带 `/`。
 
 示例：
 
@@ -99,25 +100,25 @@ https://asset.example.com/random-img/
 }
 ```
 
-约束：
+读取规则：
 
-- 顶层设备键仅允许 `pc`、`mb`
-- 明暗键仅允许 `dark`、`light`
-- 主题计数必须为 `>= 0` 的数字
+- 代码只读取顶层设备键 `pc`、`mb`
+- 代码只读取明暗键 `dark`、`light`
+- 主题计数会转换为数字；有限且 `> 0` 的条目会参与随机，`0` 或无效值不会进入候选池
 
 ### 图片存储
 
 请将图片按照以下结构存储：
 
 ```text
-{device}-{brightness}/{theme}/{index}.{ext}
+{device}-{brightness}/{theme}/{index}.webp
 ```
 
 示例：
 
 ```text
-pc-dark/theme1/00001.jpg
-mb-light/theme2/00002.png
+pc-dark/theme1/000001.webp
+mb-light/theme2/000002.webp
 ```
 
 ## 开源协议
