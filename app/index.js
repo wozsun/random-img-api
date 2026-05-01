@@ -154,7 +154,9 @@ const respondImageByMethod = async (method, imageUrl, imageInfo) => {
 	// proxy 模式：请求上游并透传响应，网络异常或临时 HTTP 状态失败时线性退避重试
 	for (let attempt = 1; attempt <= FETCH_MAX_ATTEMPTS; attempt++) {
 		try {
+			const fetchStartedAt = Date.now();
 			const upstreamResponse = await fetch(imageUrl);
+			const fetchDurationMs = Date.now() - fetchStartedAt;
 
 			// 上游返回非 2xx 状态码：临时状态重试，其他状态立即返回错误
 			if (!upstreamResponse.ok) {
@@ -177,7 +179,7 @@ const respondImageByMethod = async (method, imageUrl, imageInfo) => {
 				headers: upstreamResponse.headers,
 			});
 			if (IMAGE_INFO_HEADER_ENABLED) {
-				response.headers.set(IMAGE_INFO_HEADER_NAME, imageInfo);
+				response.headers.set(IMAGE_INFO_HEADER_NAME, `${imageInfo}; ${fetchDurationMs}`);
 			}
 			return response;
 		} catch {
