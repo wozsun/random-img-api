@@ -241,6 +241,15 @@ const handleRandomImg = async (request, env) => {
 	// 强制开关：若关闭 redirect，则无论参数如何都用 proxy
 	const effectiveMethod = REDIRECT_ENABLED ? method : "proxy";
 
+	// 读取亮度参数（若未传则为 null）
+	const requestedBrightness = params.get("b")?.toLowerCase() || null;
+	// 校验亮度参数合法性（允许 dark / light ）
+	if (requestedBrightness && !BRIGHTNESS_SET.has(requestedBrightness)) {
+		return jsonErrorResponse(ERRORS.INVALID_BRIGHTNESS, { field: "b" });
+	}
+	// 构建亮度候选列表：指定时仅用该值，否则使用全部亮度
+	const brightnessCandidates = requestedBrightness ? [requestedBrightness] : BRIGHTNESS_VALUES;
+
 	const requestedDevice = params.get("d")?.toLowerCase() || null;
 	// 校验设备参数合法性（允许 pc / mb / r）
 	if (requestedDevice && !REQUEST_DEVICE_SET.has(requestedDevice)) {
@@ -261,15 +270,6 @@ const handleRandomImg = async (request, env) => {
 		device === "r"
 		? MAP_DEVICES
 		: [device];
-
-	// 读取亮度参数（若未传则为 null）
-	const requestedBrightness = params.get("b")?.toLowerCase() || null;
-	// 校验亮度参数合法性（允许 dark / light ）
-	if (requestedBrightness && !BRIGHTNESS_SET.has(requestedBrightness)) {
-		return jsonErrorResponse(ERRORS.INVALID_BRIGHTNESS, { field: "b" });
-	}
-	// 构建亮度候选列表：指定时仅用该值，否则使用全部亮度
-	const brightnessCandidates = requestedBrightness ? [requestedBrightness] : BRIGHTNESS_VALUES;
 
 	// 读取并归一化 theme 参数：支持多次传参与逗号分隔，最终统一小写并去重
 	const rawThemeParams = Array.from(new Set(params
