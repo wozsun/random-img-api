@@ -11,7 +11,8 @@ const getEsaKvClient = ({ namespace }) => {
 const getCfKvClient = ({ env, namespace }) => env?.[namespace] ?? null;
 
 // EdgeOne
-const getEoKvClient = ({ namespace }) => globalThis?.[namespace] ?? null;
+const getEoKvClient = ({ env, namespace }) =>
+	env?.[namespace] ?? globalThis?.[namespace] ?? null;
 
 // Config
 const KV_PROVIDER_CLIENT_RESOLVERS = {
