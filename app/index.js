@@ -1,13 +1,17 @@
 import { getKvJsonObjectCached, getKvUrlCached } from "../utils/kv.js";
 import { jsonErrorResponse } from "../utils/response.js";
+// import { validateRefererAccess } from "../commons/referer.js";
+
 
 // ===========================
 // 随机图片 API 配置
 // ===========================
 
-// KV 命名空间与键名
+// 图片配置 KV 命名空间名称
 const RANDOM_IMG_CONFIG_NAMESPACE = "random_img_config";
+// KV 中 FOLDER_MAP 的键名，值为设备-亮度-主题到图片数量的映射 JSON
 const FOLDER_MAP_KEY = "FOLDER_MAP";
+// KV 中基础图片 URL 的键名，用于拼接最终图片地址
 const BASE_IMAGE_URL_KEY = "BASE_IMAGE_URL";
 
 // 允许的查询参数：d=设备, b=亮度, t=主题, m=响应方式
@@ -23,27 +27,36 @@ const BRIGHTNESS_VALUES = ["dark", "light"];
 // 可选响应方式：proxy=代理转发, redirect=302 重定向
 const METHOD_VALUES = ["proxy", "redirect"];
 
-// 代理模式下上游请求的最大重试次数
-const FETCH_MAX_ATTEMPTS = 3;
-// 重试间隔基数（毫秒），实际延迟 = 基数 × 当前重试次数
-const FETCH_RETRY_DELAY_MS = 50;
-// 代理模式下可重试的临时上游 HTTP 状态码
-const RETRYABLE_UPSTREAM_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
-
 // 默认响应方式
 const DEFAULT_METHOD = "proxy";
-// 是否允许使用 redirect 方式（关闭则强制 proxy）
+// 是否允许 redirect 响应方式，关闭时强制回退为 proxy
 const REDIRECT_ENABLED = true;
+
+// proxy 模式下上游请求最大重试次数
+const FETCH_MAX_ATTEMPTS = 3;
+// proxy 模式下重试间隔基数（毫秒），实际延迟 = 基数 × 当前重试次数
+const FETCH_RETRY_DELAY_MS = 50;
+// proxy 模式下可重试的临时上游 HTTP 状态码
+const RETRYABLE_UPSTREAM_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 // 是否在 proxy 模式下返回 X-Image-Info 响应头（包含图片分组信息）
 const IMAGE_INFO_HEADER_ENABLED = true;
 // proxy 模式下 X-Image-Info 响应头的名称
 const IMAGE_INFO_HEADER_NAME = "X-Image-Info";
 
-// 图片文件名数字位数，如 6 → 000001.webp
-const IMAGE_FILENAME_DIGITS = 6;
+// // 是否启用 Referer 校验，关闭时跳过白名单检查
+// const REFERER_CHECK_ENABLED = false;
+// // Referer 校验启用时，是否允许空 Referer（直接访问）
+// const ALLOW_EMPTY_REFERER = true;
+
+// 图片序号数字位数，如 6 → 000001
+const IMAGE_INDEX_DIGITS = 6;
 // 图片文件扩展名
 const IMAGE_FILE_EXTENSION = ".webp";
+// 图片路径模板：拼接在 BASE_IMAGE_URL 后，不含文件扩展名
+const IMAGE_PATH_PATTERN = "{device}-{brightness}/{theme}/{index}";
+// 匹配图片路径模板中可被替换的占位符
+const IMAGE_PATH_PLACEHOLDER_PATTERN = /\{(device|brightness|theme|index)\}/g;
 
 // 将数组转为 Set，用于 O(1) 校验
 const ALLOWED_PARAMS_SET = new Set(ALLOWED_PARAMS);
@@ -52,33 +65,48 @@ const REQUEST_DEVICE_SET = new Set(REQUEST_DEVICES);
 const BRIGHTNESS_SET = new Set(BRIGHTNESS_VALUES);
 const METHOD_SET = new Set(METHOD_VALUES);
 
+
 // ===========================
 // 随机图片 API 错误定义
 // ===========================
+
 const ERRORS = {
+	// 非法查询参数键
 	INVALID_QUERY_PARAMS: { status: 400, message: "Bad Request: Invalid query parameters" },
+	// 单值参数重复
 	DUPLICATE_PARAM: { status: 400, message: "Bad Request: Duplicate query parameter" },
+	// 非法设备值
 	INVALID_DEVICE: { status: 400, message: "Bad Request: Invalid device" },
+	// 非法亮度值
 	INVALID_BRIGHTNESS: { status: 400, message: "Bad Request: Invalid brightness" },
+	// 非法主题值
 	INVALID_THEME: { status: 400, message: "Bad Request: Invalid theme" },
+	// 包含与排除主题混用
 	THEME_CONFLICT: { status: 400, message: "Bad Request: Cannot mix include and exclude theme selectors" },
+	// 非法图片响应方式参数
 	INVALID_METHOD: { status: 400, message: "Bad Request: Invalid method" },
+	// KV 中 BASE_IMAGE_URL 缺失或无效
 	BASE_IMAGE_URL_CONFIG_ERROR: { status: 500, message: "Internal Server Error: BASE_IMAGE_URL is invalid or missing in KV" },
+	// KV 中 FOLDER_MAP 缺失或无效
 	FOLDER_MAP_CONFIG_ERROR: { status: 500, message: "Internal Server Error: FOLDER_MAP is invalid or missing in KV" },
+	// 筛选条件下无匹配图片
 	NO_IMAGES_FOR_COMBINATION: { status: 404, message: "Not Found: No available images for the selected filters" },
+	// 完全无可用图片
 	NO_AVAILABLE_IMAGES: { status: 404, message: "Not Found: No available images" },
+	// 上游返回非成功状态码
 	UPSTREAM_BAD_STATUS: { status: 502, message: "Bad Gateway: Upstream image service responded with a non-success status" },
+	// 上游请求网络/运行时异常
 	UPSTREAM_FETCH_EXCEPTION: { status: 502, message: "Bad Gateway: Failed to reach upstream image service due to network/runtime exception" },
 };
 
-// 模块级主题缓存，通过 sourceRef 引用比较判断 folderMap 是否变更，避免重复构建
+// 有效主题缓存：避免短时内多次请求重复从 FOLDER_MAP 提取主题列表
 let validThemeCache = {
 	themes: null,
 	themeSet: null,
 	sourceRef: null,
 };
 
-// 校验请求的查询参数是否均在允许列表内
+// 检查请求的查询参数是否均在允许列表内
 const validateAllowedQueryParams = (params) => {
 	for (const key of params.keys()) {
 		if (!ALLOWED_PARAMS_SET.has(key)) {
@@ -91,7 +119,7 @@ const validateAllowedQueryParams = (params) => {
 	return null;
 };
 
-// 校验仅允许单值的参数是否存在重复
+// 检查单值参数是否存在重复
 const validateSingleValueParams = (params) => {
 	for (const key of params.keys()) {
 		if (SINGLE_VALUE_PARAMS_SET.has(key) && params.getAll(key).length > 1) {
@@ -103,6 +131,24 @@ const validateSingleValueParams = (params) => {
 	}
 	return null;
 };
+
+// 读取图片数量索引配置
+const getFolderMapFromKV = (env) =>
+	getKvJsonObjectCached({
+		env,
+		namespace: RANDOM_IMG_CONFIG_NAMESPACE,
+		key: FOLDER_MAP_KEY,
+		cacheKey: "random-img::folder-map",
+	});
+
+// 读取图片基础 URL 配置
+const getBaseImageUrlFromKV = (env) =>
+	getKvUrlCached({
+		env,
+		namespace: RANDOM_IMG_CONFIG_NAMESPACE,
+		key: BASE_IMAGE_URL_KEY,
+		cacheKey: "random-img::base-image-url",
+	});
 
 // 从 folderMap 中提取所有有效主题名列表
 const buildValidThemes = (folderMap) =>
@@ -116,7 +162,7 @@ const buildValidThemes = (folderMap) =>
 		)
 	);
 
-// 确保 validThemeCache 与当前 folderMap 同步，必要时重建
+// 惰性更新有效主题缓存：仅当 folderMap 引用变化时重新计算
 const ensureValidThemeCache = (folderMap) => {
 	// 引用未变化，直接返回缓存结果
 	if (validThemeCache.themes && validThemeCache.sourceRef === folderMap) {
@@ -133,17 +179,42 @@ const ensureValidThemeCache = (folderMap) => {
 	return validThemeCache;
 };
 
+// // 按全局开关决定是否执行 Referer 校验，关闭时直接放行
+// const validateRefererByConfig = async (request, env) => {
+// 	// Referer 校验未启用时直接放行
+// 	if (!REFERER_CHECK_ENABLED) {
+// 		return { allowed: true, response: null };
+// 	}
+
+// 	return validateRefererAccess({
+// 		env,
+// 		namespace: RANDOM_IMG_CONFIG_NAMESPACE,
+// 		referer: request.headers.get("referer") || "",
+// 		allowEmptyReferer: ALLOW_EMPTY_REFERER,
+// 	});
+// };
+
 // 根据 baseImageUrl 和所选文件夹信息构造随机图片 URL 及图片信息标识
 const buildImageResult = (baseImageUrl, selectedFolder) => {
-	const imageNumber = Math.floor(Math.random() * selectedFolder.count) + 1;
-	const imageFilename = `${String(imageNumber).padStart(IMAGE_FILENAME_DIGITS, "0")}${IMAGE_FILE_EXTENSION}`;
-	const url = `${baseImageUrl}${selectedFolder.device}-${selectedFolder.brightness}/${selectedFolder.theme}/${imageFilename}`;
-	const imageInfo = `${selectedFolder.device}-${selectedFolder.brightness}-${selectedFolder.theme}-${imageNumber}`;
+	const imageIndex = Math.floor(Math.random() * selectedFolder.count) + 1;
+	const paddedImageIndex = String(imageIndex).padStart(IMAGE_INDEX_DIGITS, "0");
+	const imagePathValues = {
+		device: selectedFolder.device,
+		brightness: selectedFolder.brightness,
+		theme: selectedFolder.theme,
+		index: paddedImageIndex,
+	};
+	const imagePath = IMAGE_PATH_PATTERN
+		.replace(IMAGE_PATH_PLACEHOLDER_PATTERN, (_, key) => imagePathValues[key])
+		.replace(/^\/+/, "");
+	const url = `${baseImageUrl}${imagePath}${IMAGE_FILE_EXTENSION}`;
+	const imageInfo = `${selectedFolder.device}-${selectedFolder.brightness}-${selectedFolder.theme}-${imageIndex}`;
 	return { url, imageInfo };
 };
 
 // 按照指定方式（proxy/redirect）响应图片请求
 const respondImageByMethod = async (method, imageUrl, imageInfo) => {
+	// redirect 模式：直接构造 302 跳转响应
 	if (method === "redirect") {
 		return new Response(null, {
 			status: 302,
@@ -198,14 +269,21 @@ const respondImageByMethod = async (method, imageUrl, imageInfo) => {
 
 // ===========================
 // 随机图片主处理逻辑
-// 处理随机图片请求：参数校验 -> 候选组合筛选 -> 加权抽样 -> redirect/proxy 返回
 // ===========================
+
 const handleRandomImg = async (request, env) => {
 	// 仅允许 GET 请求，其余方法返回 405
 	if (request.method !== "GET") {
 		return jsonErrorResponse({ status: 405, message: "Method Not Allowed" });
 	}
 
+	// // 按配置决定是否执行 Referer 校验，失败时返回对应错误响应
+	// const refererCheckResult = await validateRefererByConfig(request, env);
+	// if (!refererCheckResult.allowed) {
+	// 	return refererCheckResult.response;
+	// }
+
+	// 解析请求 URL 以获取路径与查询参数
 	let params;
 	try {
 		params = new URL(request.url).searchParams;
@@ -250,6 +328,7 @@ const handleRandomImg = async (request, env) => {
 	// 构建亮度候选列表：指定时仅用该值，否则使用全部亮度
 	const brightnessCandidates = requestedBrightness ? [requestedBrightness] : BRIGHTNESS_VALUES;
 
+	// 读取请求指定的设备参数（若未传则为 null）
 	const requestedDevice = params.get("d")?.toLowerCase() || null;
 	// 校验设备参数合法性（允许 pc / mb / r）
 	if (requestedDevice && !REQUEST_DEVICE_SET.has(requestedDevice)) {
@@ -304,30 +383,21 @@ const handleRandomImg = async (request, env) => {
 
 	// 并行读取 FOLDER_MAP 与 BASE_IMAGE_URL 配置
 	const [folderMap, baseImageUrl] = await Promise.all([
-		getKvJsonObjectCached({
-			env,
-			namespace: RANDOM_IMG_CONFIG_NAMESPACE,
-			key: FOLDER_MAP_KEY,
-			cacheKey: "random-img::folder-map",
-		}),
-		getKvUrlCached({
-			env,
-			namespace: RANDOM_IMG_CONFIG_NAMESPACE,
-			key: BASE_IMAGE_URL_KEY,
-			cacheKey: "random-img::base-image-url",
-		}),
+		getFolderMapFromKV(env),
+		getBaseImageUrlFromKV(env),
 	]);
+	// FOLDER_MAP 缺失或无效时返回配置错误
 	if (!folderMap) {
 		return jsonErrorResponse(ERRORS.FOLDER_MAP_CONFIG_ERROR);
 	}
+	// BASE_IMAGE_URL 缺失或无效时返回配置错误
 	if (!baseImageUrl) {
 		return jsonErrorResponse(ERRORS.BASE_IMAGE_URL_CONFIG_ERROR);
 	}
 
-	// 校验用户指定的主题是否在 folderMap 中实际存在
+	// 校验用户指定的主题是否在 FolderMap 中实际存在
 	const themeCache = ensureValidThemeCache(folderMap);
 	const allMentionedThemes = [...themeIncludes, ...themeExcludes];
-
 	if (allMentionedThemes.length > 0) {
 		const invalidTheme = allMentionedThemes.find((t) => !themeCache.themeSet.has(t));
 		if (invalidTheme) {
@@ -371,9 +441,7 @@ const handleRandomImg = async (request, env) => {
 		if (hasFilters) {
 			return jsonErrorResponse(ERRORS.NO_IMAGES_FOR_COMBINATION);
 		}
-		return jsonErrorResponse(ERRORS.NO_AVAILABLE_IMAGES, {
-			hint: "Check FOLDER_MAP counts in KV to ensure at least one image count is greater than 0",
-		});
+		return jsonErrorResponse(ERRORS.NO_AVAILABLE_IMAGES);
 	}
 
 	// 加权随机抽样：以 count 为权重选取候选组合，使每张图片被选中的概率趋于均等

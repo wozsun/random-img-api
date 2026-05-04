@@ -108,7 +108,15 @@ https://asset.example.com/random-img/
 
 ### 图片存储
 
-请将图片按照以下结构存储：
+图片路径由 KV 中的 `BASE_IMAGE_URL`、代码顶部的 `IMAGE_PATH_PATTERN` 和文件扩展名组成。`BASE_IMAGE_URL` 依旧从 KV 读取。
+
+默认 `IMAGE_PATH_PATTERN` 为：
+
+```text
+{device}-{brightness}/{theme}/{index}
+```
+
+因此默认请将图片按照以下结构存储：
 
 ```text
 {device}-{brightness}/{theme}/{index}.webp
@@ -119,6 +127,13 @@ https://asset.example.com/random-img/
 ```text
 pc-dark/theme1/000001.webp
 mb-light/theme2/000002.webp
+```
+
+如需调整路径格式，可修改 `app/index.js` 顶部的 `IMAGE_PATH_PATTERN`。该模板支持 `{device}`、`{brightness}`、`{theme}`、`{index}` 四个占位符，并可用 `/` 与 `-` 自由组合，例如：
+
+```text
+{device}/{brightness}-{theme}/{index}
+{theme}/{device}-{brightness}-{index}
 ```
 
 ## 开源协议

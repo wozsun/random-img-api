@@ -112,7 +112,15 @@ Read rules:
 
 ### Image Storage
 
-Store images using the following path structure:
+Image paths are composed from `BASE_IMAGE_URL` in KV, the `IMAGE_PATH_PATTERN` constant at the top of the code, and the file extension. `BASE_IMAGE_URL` is still read from KV.
+
+The default `IMAGE_PATH_PATTERN` is:
+
+```text
+{device}-{brightness}/{theme}/{index}
+```
+
+With the default pattern, store images using the following path structure:
 
 ```text
 {device}-{brightness}/{theme}/{index}.webp
@@ -123,6 +131,13 @@ Examples:
 ```text
 pc-dark/theme1/000001.webp
 mb-light/theme2/000002.webp
+```
+
+To change the path format, edit `IMAGE_PATH_PATTERN` at the top of `app/index.js`. The template supports `{device}`, `{brightness}`, `{theme}`, and `{index}` placeholders, and you can combine them freely with `/` and `-`, for example:
+
+```text
+{device}/{brightness}-{theme}/{index}
+{theme}/{device}-{brightness}-{index}
 ```
 
 ## License
