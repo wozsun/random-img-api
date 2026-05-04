@@ -268,29 +268,41 @@ const handleRandomImg = async (request, env) => {
 	// 构建设备候选列表："r" 展开为全部设备，否则仅用指定值
 	const deviceCandidates =
 		device === "r"
-		? MAP_DEVICES
-		: [device];
+			? MAP_DEVICES
+			: [device];
 
 	// 读取并归一化 theme 参数：支持多次传参与逗号分隔，最终统一小写并去重
-	const rawThemeParams = Array.from(new Set(params
+	const normalizedThemeValues = Array.from(new Set(params
 		.getAll("t")
 		.flatMap((value) => value.split(","))
 		.map((value) => value.trim().toLowerCase())
 		.filter(Boolean)));
 
-	// 分离包含/排除主题："!theme" 为排除，其余为包含，两者不可混用
-	const includeThemes = rawThemeParams.filter((v) => !v.startsWith("!"));
-	const excludeThemes = rawThemeParams.filter((v) => v.startsWith("!")).map((v) => v.slice(1)).filter(Boolean);
+	// 以 ! 为前缀的值表示排除该主题，不带前缀为包含，两者不可混用
+	const themeIncludes = [];
+	const themeExcludes = [];
+	for (const value of normalizedThemeValues) {
+		if (value.startsWith("!")) {
+			const excludedTheme = value.slice(1);
+			if (excludedTheme) {
+				themeExcludes.push(excludedTheme);
+			}
+			continue;
+		}
 
-	if (includeThemes.length > 0 && excludeThemes.length > 0) {
+		themeIncludes.push(value);
+	}
+
+	// 包含与排除不可混用，同时存在时返回冲突错误
+	if (themeIncludes.length > 0 && themeExcludes.length > 0) {
 		return jsonErrorResponse(ERRORS.THEME_CONFLICT, {
-			include: includeThemes,
-			exclude: excludeThemes,
+			include: themeIncludes,
+			exclude: themeExcludes,
 			hint: "Use either include themes (e.g. t=nature) or exclude themes (e.g. t=!nature), not both",
 		});
 	}
 
-	// 并行获取 KV 配置：文件夹映射表 和 图片基础 URL
+	// 并行读取 FOLDER_MAP 与 BASE_IMAGE_URL 配置
 	const [folderMap, baseImageUrl] = await Promise.all([
 		getKvJsonObjectCached({
 			env,
@@ -314,7 +326,7 @@ const handleRandomImg = async (request, env) => {
 
 	// 校验用户指定的主题是否在 folderMap 中实际存在
 	const themeCache = ensureValidThemeCache(folderMap);
-	const allMentionedThemes = [...includeThemes, ...excludeThemes];
+	const allMentionedThemes = [...themeIncludes, ...themeExcludes];
 
 	if (allMentionedThemes.length > 0) {
 		const invalidTheme = allMentionedThemes.find((t) => !themeCache.themeSet.has(t));
@@ -325,10 +337,10 @@ const handleRandomImg = async (request, env) => {
 
 	// 构建主题候选列表：有包含则直接用，有排除则从全量中过滤，均未指定则使用全部主题
 	let themeCandidates;
-	if (includeThemes.length > 0) {
-		themeCandidates = includeThemes;
-	} else if (excludeThemes.length > 0) {
-		const excludeSet = new Set(excludeThemes);
+	if (themeIncludes.length > 0) {
+		themeCandidates = themeIncludes;
+	} else if (themeExcludes.length > 0) {
+		const excludeSet = new Set(themeExcludes);
 		themeCandidates = themeCache.themes.filter((t) => !excludeSet.has(t));
 	} else {
 		themeCandidates = themeCache.themes;
@@ -352,8 +364,8 @@ const handleRandomImg = async (request, env) => {
 	const hasFilters = Boolean(
 		requestedDevice ||
 		requestedBrightness ||
-		includeThemes.length > 0 ||
-		excludeThemes.length > 0
+		themeIncludes.length > 0 ||
+		themeExcludes.length > 0
 	);
 	if (candidates.length === 0) {
 		if (hasFilters) {
