@@ -58,7 +58,7 @@ Examples:
 - `m=redirect`: Returns a `302` redirect with the `Location` header pointing to the image URL
 
 > ⚠️ Privacy notice: `m=redirect` (302) mode does not hide the upstream image source URL — the client can directly see the image repository/CDN URL. Use `m=proxy` (default) if you need to conceal the source address.
-> Optional: You can enable or disable `redirect` mode by modifying the `REDIRECT_ENABLED` constant in `app/index.js`.
+> Optional: You can enable or disable `redirect` mode by modifying the `REDIRECT_ENABLED` constant in `app/config.js`.
 
 ## Configuration
 
@@ -112,7 +112,7 @@ Read rules:
 
 ### Image Storage
 
-Image paths are composed from `BASE_IMAGE_URL` in KV, the `IMAGE_PATH_PATTERN` constant at the top of the code, and the file extension. `BASE_IMAGE_URL` is still read from KV.
+Image paths are composed from `BASE_IMAGE_URL` in KV, the `IMAGE_PATH_PATTERN` constant in `app/config.js`, and the file extension. `BASE_IMAGE_URL` is still read from KV.
 
 The default `IMAGE_PATH_PATTERN` is:
 
@@ -133,7 +133,7 @@ pc-dark/theme1/000001.webp
 mb-light/theme2/000002.webp
 ```
 
-To change the path format, edit `IMAGE_PATH_PATTERN` at the top of `app/index.js`. The template supports `{device}`, `{brightness}`, `{theme}`, and `{index}` placeholders, and you can combine them freely with `/` and `-`, for example:
+To change the path format, edit `IMAGE_PATH_PATTERN` in `app/config.js`. The template supports `{device}`, `{brightness}`, `{theme}`, and `{index}` placeholders, and you can combine them freely with `/` and `-`, for example:
 
 ```text
 {device}/{brightness}-{theme}/{index}

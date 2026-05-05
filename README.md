@@ -54,7 +54,7 @@
 - `m=proxy`：边缘函数回源拉图并透传内容
 - `m=redirect`：返回 `302`，`Location` 指向目标图片 URL
 
-> ⚠️ 隐私提示：`m=redirect`（302）模式不会隐藏上游图片源地址，客户端可直接看到图片仓库/分发源 URL。可通过修改 `app/index.js` 中的 `REDIRECT_ENABLED` 配置，启用或禁用 `redirect` 模式。当`REDIRECT_ENABLED = false`时，所有请求将强制使用 `proxy` 模式。
+> ⚠️ 隐私提示：`m=redirect`（302）模式不会隐藏上游图片源地址，客户端可直接看到图片仓库/分发源 URL。可通过修改 `app/config.js` 中的 `REDIRECT_ENABLED` 配置，启用或禁用 `redirect` 模式。当`REDIRECT_ENABLED = false`时，所有请求将强制使用 `proxy` 模式。
 
 ## 配置说明
 
@@ -108,7 +108,7 @@ https://asset.example.com/random-img/
 
 ### 图片存储
 
-图片路径由 KV 中的 `BASE_IMAGE_URL`、代码顶部的 `IMAGE_PATH_PATTERN` 和文件扩展名组成。`BASE_IMAGE_URL` 依旧从 KV 读取。
+图片路径由 KV 中的 `BASE_IMAGE_URL`、`app/config.js` 中的 `IMAGE_PATH_PATTERN` 和文件扩展名组成。`BASE_IMAGE_URL` 依旧从 KV 读取。
 
 默认 `IMAGE_PATH_PATTERN` 为：
 
@@ -129,7 +129,7 @@ pc-dark/theme1/000001.webp
 mb-light/theme2/000002.webp
 ```
 
-如需调整路径格式，可修改 `app/index.js` 顶部的 `IMAGE_PATH_PATTERN`。该模板支持 `{device}`、`{brightness}`、`{theme}`、`{index}` 四个占位符，并可用 `/` 与 `-` 自由组合，例如：
+如需调整路径格式，可修改 `app/config.js` 中的 `IMAGE_PATH_PATTERN`。该模板支持 `{device}`、`{brightness}`、`{theme}`、`{index}` 四个占位符，并可用 `/` 与 `-` 自由组合，例如：
 
 ```text
 {device}/{brightness}-{theme}/{index}
