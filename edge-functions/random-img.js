@@ -1,3 +1,5 @@
+// 这个文件是为了在腾讯云 EdgeOne 上部署时，强制使用 EO 作为 KV 存储提供者
+
 import app from "../app/index.js";
 
 const withForcedEoProvider = (env = {}) => ({

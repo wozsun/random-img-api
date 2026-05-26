@@ -41,10 +41,10 @@ export const IMAGE_INFO_HEADER_ENABLED = true;
 // proxy 模式下 X-Image-Info 响应头的名称
 export const IMAGE_INFO_HEADER_NAME = "X-Image-Info";
 
-// // 是否启用 Referer 校验，关闭时跳过白名单检查
-// export const REFERER_CHECK_ENABLED = false;
-// // Referer 校验启用时，是否允许空 Referer（直接访问）
-// export const ALLOW_EMPTY_REFERER = true;
+// 是否启用 Referer 校验，关闭时跳过白名单检查
+export const REFERER_CHECK_ENABLED = false;
+// Referer 校验启用时，是否允许空 Referer（直接访问）
+export const ALLOW_EMPTY_REFERER = true;
 
 // 图片索引数字位数，如 6 → 000001
 export const IMAGE_INDEX_DIGITS = 6;

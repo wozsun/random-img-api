@@ -1,4 +1,4 @@
-// ESA
+// Aliyun ESA
 const edgeKVClients = new Map();
 const FAILED_EDGE_KV_CLIENT = Symbol("FAILED_EDGE_KV_CLIENT");
 const getEsaKvClient = ({ namespace }) => {
@@ -22,12 +22,11 @@ const getEsaKvClient = ({ namespace }) => {
 	}
 };
 
-// Cloudflare
+// Cloudflare Workers
 const getCfKvClient = ({ env, namespace }) => env?.[namespace] ?? null;
 
-// EdgeOne
-const getEoKvClient = ({ env, namespace }) =>
-	env?.[namespace] ?? globalThis?.[namespace] ?? null;
+// Tencent Cloud EdgeOne
+const getEoKvClient = ({ env, namespace }) => env?.[namespace] ?? globalThis?.[namespace] ?? null;
 
 // Config
 const KV_PROVIDER_CLIENT_RESOLVERS = {
@@ -38,7 +37,7 @@ const KV_PROVIDER_CLIENT_RESOLVERS = {
 
 // 根据环境与 namespace 获取对应平台的 KV 客户端
 export const getKvClient = ({ env, namespace }) => {
-	const provider = env?.KV_PROVIDER || "ESA";
+	const provider = String(env?.KV_PROVIDER || "ESA").trim().toUpperCase();
 	const resolver = KV_PROVIDER_CLIENT_RESOLVERS[provider];
 	if (!resolver) {
 		return null;
