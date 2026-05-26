@@ -1,5 +1,5 @@
 import { handleRandomImg } from "./random-img.js";
-import { jsonErrorResponse } from "../common/response.js";
+import { jsonErrorResponse } from "../commons/response.js";
 
 
 // 规范化路由路径：保留根路径，其余路径去掉尾部斜杠

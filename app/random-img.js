@@ -1,7 +1,7 @@
 import * as CONFIG from "./config.js";
-import { getKvJsonObjectCached, getKvUrlCached } from "../common/kv.js";
-import { jsonErrorResponse } from "../common/response.js";
-import { validateRefererAccess } from "../common/referer.js";
+import { getKvJsonObjectCached, getKvUrlCached } from "../commons/kv.js";
+import { jsonErrorResponse } from "../commons/response.js";
+import { validateRefererAccess } from "../commons/referer.js";
 
 // 将数组转为 Set，用于 O(1) 校验
 const ALLOWED_QUERY_SET = new Set(CONFIG.ALLOWED_QUERY);
