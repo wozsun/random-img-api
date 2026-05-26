@@ -6,12 +6,10 @@ const getEsaKvClient = ({ namespace }) => {
 		const cachedClient = edgeKVClients.get(namespace);
 		return cachedClient === FAILED_EDGE_KV_CLIENT ? null : cachedClient;
 	}
-
 	if (typeof EdgeKV !== "function") {
 		edgeKVClients.set(namespace, FAILED_EDGE_KV_CLIENT);
 		return null;
 	}
-
 	try {
 		const client = new EdgeKV({ namespace });
 		edgeKVClients.set(namespace, client);

@@ -1,6 +1,6 @@
 import * as CONFIG from "./config.js";
 import { getKvJsonObjectCached, getKvUrlCached } from "../commons/kv.js";
-import { jsonErrorResponse } from "../commons/response.js";
+import { jsonErrorResponse, jsonSuccessResponse } from "../commons/response.js";
 import { validateRefererAccess } from "../commons/referer.js";
 
 // 将数组转为 Set，用于 O(1) 校验
@@ -408,4 +408,63 @@ export const handleRandomImg = async (request, env) => {
     // 构建图片 URL 并按所选方式（proxy / redirect）响应
     const { url: imageUrl, imageInfo } = buildImageResult(baseImageUrl, selectedFolder);
     return await respondImageByMethod(effectiveMethod, imageUrl, imageInfo);
+};
+
+
+// ===========================
+// 统计数据
+// ===========================
+
+// 汇总 FOLDER_MAP 中的图片数量：按设备-亮度组合分组、按主题聚合、并计算总数
+const buildRandomImgCountData = (folderMap) => {
+    const groupTotals = {};
+    const themeDetails = {};
+    let totalImages = 0;
+    // 按字母序遍历设备层
+    for (const device of Object.keys(folderMap).sort()) {
+        const deviceEntry = folderMap[device];
+        // 跳过非对象的无效设备条目
+        if (!deviceEntry || typeof deviceEntry !== "object") {
+            continue;
+        }
+        // 按字母序遍历亮度层
+        for (const brightness of Object.keys(deviceEntry).sort()) {
+            const brightnessEntry = deviceEntry[brightness];
+            // 跳过非对象的无效亮度条目
+            if (!brightnessEntry || typeof brightnessEntry !== "object") {
+                continue;
+            }
+            const groupKey = `${device}-${brightness}`;
+            let groupTotal = 0;
+            // 按字母序遍历主题层，累加各组合的图片数量
+            for (const theme of Object.keys(brightnessEntry).sort()) {
+                const rawCount = Number(brightnessEntry[theme] ?? 0);
+                const count = Number.isFinite(rawCount) ? rawCount : 0;
+                groupTotal += count;
+                totalImages += count;
+                // 首次遇到该主题时初始化其统计对象
+                if (!themeDetails[theme]) {
+                    themeDetails[theme] = { total: 0 };
+                }
+                themeDetails[theme].total += count;
+                themeDetails[theme][groupKey] = count;
+            }
+            groupTotals[groupKey] = groupTotal;
+        }
+    }
+    return {
+        totalImages,
+        groupTotals,
+        themeDetails,
+    };
+};
+
+// 处理图片数量统计请求：读取 FOLDER_MAP 并返回汇总统计数据
+export const handleRandomImgCount = async (_request, env) => {
+    const folderMap = await getFolderMapFromKV(env);
+    // 配置缺失时返回错误
+    if (!folderMap) {
+        return jsonErrorResponse(CONFIG.ERRORS.FOLDER_MAP_CONFIG_ERROR);
+    }
+    return jsonSuccessResponse(buildRandomImgCountData(folderMap));
 };

@@ -1,6 +1,8 @@
-import { handleRandomImg } from "./random-img.js";
-import { jsonErrorResponse } from "../commons/response.js";
+import { handleRandomImg, handleRandomImgCount } from "./random-img.js";
+import { jsonErrorResponse, jsonSuccessResponse } from "../commons/response.js";
 
+// 是否启用图片数量统计入口：GET /random-img-count
+const RANDOM_IMG_COUNT_ROUTE_ENABLED = true;
 
 // 规范化路由路径：保留根路径，其余路径去掉尾部斜杠
 const normalizePathname = (pathname) => {
@@ -18,8 +20,14 @@ export default {
 			if (pathname === "/") {
 				return jsonErrorResponse({ status: 404, message: "No API route specified" });
 			}
+			if (pathname === "/healthcheck") {
+				return jsonSuccessResponse({ message: "API on EdgeFunction is healthy" });
+			}
 			if (pathname === "/random-img") {
 				return await handleRandomImg(request, env);
+			}
+			if (RANDOM_IMG_COUNT_ROUTE_ENABLED && pathname === "/random-img-count") {
+				return await handleRandomImgCount(request, env);
 			}
 
 			return jsonErrorResponse({ status: 404, message: "API Not Found" });
