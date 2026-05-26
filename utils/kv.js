@@ -1,8 +1,12 @@
 import { getKvClient } from "./kv-providers.js";
 
+// 正常值缓存有效期（毫秒）
 const KV_CACHE_TTL_MS = 60 * 1000;
-const KV_NEGATIVE_CACHE_TTL_MS = 3 * 1000;
-const KV_GET_MAX_ATTEMPTS = 3;
+// 空值（未命中）缓存有效期（毫秒），避免短时间内重复回源
+const KV_NEGATIVE_CACHE_TTL_MS = 1 * 1000;
+// KV 读取最大重试次数
+const KV_GET_MAX_ATTEMPTS = 5;
+// 重试间隔基数（毫秒），实际延迟 = 基数 × 当前重试次数
 const KV_RETRY_BASE_DELAY_MS = 50;
 
 // 执行带线性退避重试的 KV 读取，失败返回 null
