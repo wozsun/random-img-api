@@ -1,11 +1,11 @@
 # Random Image API
 
-基于边缘函数的随机图片 API 项目，默认面向阿里云 ESA，同时兼容 Cloudflare Workers 与腾讯云 EdgeOne。
+基于边缘函数的随机图片 API 项目，兼容阿里云 ESA、Cloudflare Workers 与腾讯云 EdgeOne。
 
 ## 特性
 
 - 边缘函数运行，低延迟、免运维
-- 使用 KV 管理运行时配置，无需每次改配置都重新部署
+- 使用 KV 管理运行时配置，增减图片时仅需更新 KV，无需 redeploy
 - 支持 ESA EdgeKV、Cloudflare Workers KV、腾讯云 EdgeOne KV
 - 支持按设备类型、明暗类型、主题等多维度筛选随机图片
 - 可选 `proxy` 代理图片内容或 `redirect` 返回 302 跳转
