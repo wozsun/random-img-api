@@ -460,7 +460,11 @@ const buildRandomImgCountData = (folderMap) => {
 };
 
 // 处理图片数量统计请求：读取 FOLDER_MAP 并返回汇总统计数据
-export const handleRandomImgCount = async (_request, env) => {
+export const handleRandomImgCount = async (request, env) => {
+    if (request.method !== "GET") {
+        return jsonErrorResponse({ status: 405, message: "Method Not Allowed" });
+    }
+
     const folderMap = await getFolderMapFromKV(env);
     // 配置缺失时返回错误
     if (!folderMap) {

@@ -27,6 +27,8 @@ edge-functions/   EdgeOne 平台适配入口
 
 ## API 接口
 
+除 `/random-img` 外，已知普通路由默认不接受查询参数；携带查询参数会返回 403。未知路由仍按 404 处理。
+
 ### `GET /random-img`
 
 随机图片主接口。
@@ -102,13 +104,57 @@ const SINGLE_VALUE_QUERY = ["d", "b", "m"];
 | 状态码 | 场景 |
 | --- | --- |
 | 400 | 参数非法、重复、混用包含/排除主题等 |
-| 403 | Referer 校验未通过（仅在启用时） |
+| 403 | Referer 校验未通过（仅在启用时），或普通路由携带了不允许的查询参数 |
 | 404 | 无匹配图片或无可用路由 |
-| 405 | 使用了 GET 以外的方法 |
+| 405 | 使用了当前接口不支持的方法 |
 | 500 | KV 配置缺失或无效 |
 | 502 | 上游图片服务请求失败 |
 
-具体错误定义见 `app/config.js` 中的 `ERRORS` 常量。
+随机图片业务错误定义见 `app/config.js` 中的 `ERRORS` 常量；入口路由错误由 `app/index.js` 返回。
+
+### `GET /random-img-count`
+
+图片数量统计接口，读取 `FOLDER_MAP` 并返回按设备、亮度与主题汇总后的数量信息。
+
+- 仅支持 `GET`，其他方法返回 405
+- 不接受查询参数，携带查询参数会返回 403
+
+响应示例：
+
+```json
+{
+  "totalImages": 30,
+  "groupTotals": {
+    "pc-dark": 10,
+    "pc-light": 8,
+    "mb-dark": 7,
+    "mb-light": 5
+  },
+  "themeDetails": {
+    "theme1": {
+      "total": 12,
+      "pc-dark": 4,
+      "pc-light": 3,
+      "mb-dark": 3,
+      "mb-light": 2
+    }
+  }
+}
+```
+
+### `GET /healthcheck`
+
+健康检查接口，用于确认边缘函数入口可正常响应。
+
+- 仅支持无查询参数访问，携带查询参数会返回 403
+
+响应示例：
+
+```json
+{
+  "message": "API on EdgeFunction is healthy"
+}
+```
 
 ## KV 存储配置
 

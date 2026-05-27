@@ -27,6 +27,8 @@ edge-functions/   EdgeOne platform adapter entry
 
 ## API Reference
 
+Except for `/random-img`, known regular routes do not accept query parameters by default; requests with query parameters return 403. Unknown routes still return 404.
+
 ### `GET /random-img`
 
 Main random image endpoint.
@@ -102,13 +104,57 @@ Common status codes:
 | Status | Scenario |
 | --- | --- |
 | 400 | Invalid parameter, duplicate parameter, mixed include/exclude themes, etc. |
-| 403 | Referer validation failed (only when enabled) |
+| 403 | Referer validation failed (only when enabled), or query parameters were sent to a route that does not allow them |
 | 404 | No matching images or no matching route |
-| 405 | Request method is not GET |
+| 405 | Unsupported request method for the current endpoint |
 | 500 | KV configuration missing or invalid |
 | 502 | Upstream image service request failed |
 
-See the `ERRORS` constant in `app/config.js` for all error definitions.
+Random-image business errors are defined in the `ERRORS` constant in `app/config.js`; entry-routing errors are returned by `app/index.js`.
+
+### `GET /random-img-count`
+
+Image count endpoint. It reads `FOLDER_MAP` and returns totals grouped by device, brightness, and theme.
+
+- Supports `GET` only; other methods return 405
+- Does not accept query parameters; requests with query parameters return 403
+
+Example response:
+
+```json
+{
+  "totalImages": 30,
+  "groupTotals": {
+    "pc-dark": 10,
+    "pc-light": 8,
+    "mb-dark": 7,
+    "mb-light": 5
+  },
+  "themeDetails": {
+    "theme1": {
+      "total": 12,
+      "pc-dark": 4,
+      "pc-light": 3,
+      "mb-dark": 3,
+      "mb-light": 2
+    }
+  }
+}
+```
+
+### `GET /healthcheck`
+
+Healthcheck endpoint for confirming that the edge function entry responds correctly.
+
+- Only accepts requests without query parameters; requests with query parameters return 403
+
+Example response:
+
+```json
+{
+  "message": "API on EdgeFunction is healthy"
+}
+```
 
 ## KV Storage Configuration
 
