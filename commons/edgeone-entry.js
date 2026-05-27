@@ -1,5 +1,3 @@
-// 这个文件是为了在腾讯云 EdgeOne 上部署时，强制使用 EO 作为 KV 存储提供者
-
 import app from "../app/index.js";
 
 const withForcedEoProvider = (env = {}) => ({
@@ -7,8 +5,8 @@ const withForcedEoProvider = (env = {}) => ({
     KV_PROVIDER: "EO",
 });
 
-// 腾讯云 EdgeOne 默认函数入口
-export default async function onRequest(context) {
+// EdgeOne 只负责把命中的平台路由转交给通用 app，由 app 继续处理业务路由。
+export async function handleEdgeOneRequest(context) {
     const request = context?.request;
     const env = context?.env;
 
